@@ -95,7 +95,8 @@ function actualizarEstimacion() {
   const fb = { 'sto-3g': 0.3, '3-21g': 0.5, '6-31g': 0.7, '6-31g*': 1, '6-31g**': 1.3, '6-31+g*': 1.6, '6-311g**': 2, 'cc-pvdz': 1.3, 'aug-cc-pvdz': 4, 'def2-svp': 1.2, 'def2-tzvp': 5 }[base] || 1;
   const fm = { hf: 0.6, mp2: 3 }[metodo] || 1;
   // Hessiano analítico para HF; para DFT/MP2 Psi4 usa diferencias finitas de gradientes (~2 por coordenada)
-  const ft = { energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1) }[tarea] || 1;
+  // El TS calcula dos hessianos (al inicio y al final) y suele necesitar más pasos
+  const ft = { energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1) }[tarea] || 1;
   if (!pesados) { $('#estimacion').textContent = ''; return; }
   const seg = 0.04 * Math.pow(Math.max(pesados, 1), 3) * fb * fm * ft; // segundos aproximados con 4 hilos
   const nivel = seg < 40 ? 'rápido (segundos)' : seg < 240 ? 'moderado (1–4 min)' : seg < 1200 ? 'lento (4–20 min)' : 'muy lento: considere una base más pequeña o «Energía»';
@@ -841,7 +842,7 @@ function mostrarError(t) {
 function etiquetaModeloResultado() {
   const t = estado.infoTrabajo;
   if (!t) return;
-  const tipo = t.tarea === 'energia' ? 'geometría de entrada' : 'geometría optimizada';
+  const tipo = t.tarea === 'energia' ? 'geometría de entrada' : t.tarea === 'ts' ? 'estado de transición' : 'geometría optimizada';
   $('#etiquetaModelo').textContent = `${t.titulo} · ${nombreDe('metodos', t.metodo)}/${nombreDe('bases', t.base)} · ${tipo}`;
 }
 
@@ -881,6 +882,18 @@ function cifra(nombre, valor, extra = '') {
   return `<div class="cifra"><div class="nombre">${nombre}</div><div class="valor">${valor}</div>${extra ? `<div class="extra">${extra}</div>` : ''}</div>`;
 }
 
+// Qué significa el número de frecuencias imaginarias según el tipo de cálculo
+function interpretarImaginarias(tarea, n) {
+  if (tarea === 'ts') {
+    if (n === 1) return 'Estado de transición confirmado: anime el modo imaginario para ver la coordenada de reacción';
+    if (n === 0) return 'No es un TS: la búsqueda llegó a un mínimo. Parta de una geometría más cercana al TS';
+    return `Punto de silla de orden ${n}: no es un TS simple. Desplace la geometría a lo largo de los modos imaginarios sobrantes`;
+  }
+  if (!n) return 'Mínimo de energía confirmado';
+  return 'No es un mínimo: la optimización terminó en un punto de silla (el gradiente es ~0 por simetría). '
+    + 'Si es un estado de transición, use el tipo «Estado de transición (TS)»; si busca un mínimo, rompa la simetría de la geometría';
+}
+
 function panelResumen(t, r) {
   const e = r.energia || {};
   const d = r.dipolo_debye;
@@ -894,7 +907,7 @@ function panelResumen(t, r) {
   html += cifra('Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
   if (d) html += cifra('Momento dipolar', `${fx(d.total, 3)} D`, `x ${fx(d.x, 3)} · y ${fx(d.y, 3)} · z ${fx(d.z, 3)}`);
   if (o.homo_ev != null) html += cifra('HOMO / LUMO', `${fx(o.homo_ev, 3)} / ${fx(o.lumo_ev, 3)} eV`, o.gap_ev != null ? `Brecha HOMO–LUMO: ${fx(o.gap_ev, 3)} eV` : '');
-  if (f) html += cifra('Frecuencias imaginarias', String(f.n_imaginarias), f.n_imaginarias ? 'No es un mínimo: revise la geometría' : 'Mínimo de energía confirmado');
+  if (f) html += cifra('Frecuencias imaginarias', String(f.n_imaginarias), interpretarImaginarias(r.tarea, f.n_imaginarias));
   if (th?.zpve != null) html += cifra('Energía de punto cero', `${fx(th.zpve * HARTREE_KCAL, 2)} kcal/mol`, `${fx(th.zpve, 6)} E<sub>h</sub>`);
   if (th?.entalpia != null) html += cifra('Entalpía H (298 K)', `${fx(th.entalpia, 6)} E<sub>h</sub>`);
   if (th?.energia_libre_gibbs != null) html += cifra('Energía libre G (298 K)', `${fx(th.energia_libre_gibbs, 6)} E<sub>h</sub>`);

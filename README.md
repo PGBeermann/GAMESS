@@ -20,7 +20,13 @@ el potencial electrostático y las vibraciones.
 3. **Configurar el cálculo**:
    - Métodos: HF, B3LYP, PBE0, ωB97X-D, M06-2X, MP2
    - Bases: STO-3G, 3-21G, 6-31G, 6-31G(d), 6-31G(d,p), 6-31+G(d), 6-311G(d,p), cc-pVDZ, aug-cc-pVDZ, def2-SVP, def2-TZVP
-   - Tareas: energía (punto simple), optimización de geometría, optimización + frecuencias
+   - Tareas: energía (punto simple), optimización de geometría, optimización + frecuencias y
+     **estado de transición (TS) + frecuencias**. El TS usa optking con `opt_type ts`
+     (algoritmo RS-I-RFO) y `full_hess_every 0` (hessiano exacto al inicio: el estimado no tiene
+     curvatura negativa); al final las frecuencias deben dar una sola imaginaria. En un .in se
+     activa con `set opt_type ts`, `set optking { opt_type ts }` u `optimizer_keywords`.
+     Ojo: «Optimización» busca un **mínimo**; si se parte de un TS simétrico, el gradiente es ~0
+     y converge sin mover los átomos (aparece una frecuencia imaginaria).
 4. **Resultados**:
    - Energía total (E<sub>h</sub>, kcal/mol, eV) y sus componentes
    - Momento dipolar, cargas de Mulliken (también como colores y etiquetas en 3D)

@@ -63,6 +63,7 @@ const TAREAS = [
   { id: 'energia', nombre: 'Energía (punto simple)' },
   { id: 'optimizacion', nombre: 'Optimización de geometría' },
   { id: 'frecuencias', nombre: 'Optimización + frecuencias (IR y termoquímica)' },
+  { id: 'ts', nombre: 'Estado de transición (TS) + frecuencias' },
 ];
 // Elementos H–Kr y I (número atómico para validar electrones/multiplicidad)
 const Z = Object.fromEntries(

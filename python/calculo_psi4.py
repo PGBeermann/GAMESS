@@ -4,7 +4,7 @@ Uso:  python calculo_psi4.py <carpeta_del_trabajo>
 
 La carpeta debe contener `entrada.json` (lo escribe servidor.js):
     {"xyz": "C 0 0 0\\nH ...", "carga": 0, "multiplicidad": 1,
-     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias",
+     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts",
      "mep": true, "hilos": 2, "memoria": "2 GB", "titulo": "etanol"}
 
 Archivos que produce en la carpeta:
@@ -33,7 +33,7 @@ AU_DEBYE = psi4.constants.dipmom_au2debye
 METODOS = {"hf", "b3lyp", "pbe0", "wb97x-d", "m06-2x", "mp2"}
 BASES = {"sto-3g", "3-21g", "6-31g", "6-31g*", "6-31g**", "6-31+g*", "6-311g**",
          "cc-pvdz", "aug-cc-pvdz", "def2-svp", "def2-tzvp"}
-TAREAS = {"energia", "optimizacion", "frecuencias"}
+TAREAS = {"energia", "optimizacion", "frecuencias", "ts"}
 
 
 def etapa(texto):
@@ -107,6 +107,10 @@ def optimizar(metodo, mol):
 
     def gradiente_con_aviso(name, **kwargs):
         salida = original(name, **kwargs)
+        # Sólo los pasos del ciclo de optimización (que usa nuestra molécula), no las
+        # geometrías desplazadas de un hessiano por diferencias finitas
+        if kwargs.get("molecule") is not mol:
+            return salida
         try:
             pasos[0] += 1
             emitir_paso(pasos[0], kwargs.get("molecule") or mol, salida[0] if isinstance(salida, tuple) else salida)
@@ -283,11 +287,15 @@ def frecuencias(wfn_freq, simbolos):
     return res
 
 
-def mensaje_error(e):
+def mensaje_error(e, tarea=None):
     tipo = type(e).__name__
     if tipo == "SCFConvergenceError":
         return "El SCF no convergió. Pruebe otra base, otro método o revise la carga/multiplicidad."
     if tipo == "OptimizationConvergenceError":
+        if tarea == "ts":
+            return ("La búsqueda del estado de transición no convergió. Parta de una geometría más "
+                    "cercana al TS (por ejemplo, con los enlaces que se forman o rompen a distancias "
+                    "intermedias) o pruebe primero con una base más pequeña.")
         return "La optimización de geometría no convergió en el número máximo de pasos."
     if tipo == "TDSCFConvergenceError" or tipo == "ConvergenceError":
         return f"Un procedimiento iterativo no convergió: {e}"
@@ -335,10 +343,17 @@ def main():
             etapa("Calculando la energía (punto simple)")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         else:
-            etapa("Optimizando la geometría")
+            if tarea == "ts":
+                # Búsqueda de estado de transición: optking sigue el modo de curvatura negativa
+                # (RS-I-RFO). Necesita el hessiano exacto al inicio (full_hess_every 0): el
+                # hessiano estimado por defecto no tiene valores propios negativos.
+                psi4.set_options({"opt_type": "ts", "full_hess_every": 0})
+                etapa("Buscando el estado de transición (primero calcula el hessiano exacto)")
+            else:
+                etapa("Optimizando la geometría")
             energia, trayectoria = optimizar(metodo, mol)
             resultado["trayectoria"] = trayectoria
-            if tarea == "frecuencias":
+            if tarea in ("frecuencias", "ts"):
                 etapa("Calculando frecuencias vibracionales (hessiano)")
                 _, wfn_freq = psi4.frequency(metodo, return_wfn=True, molecule=mol)
             simbolos, _ = geometria_actual(mol)
@@ -381,7 +396,7 @@ def main():
                 resultado["aviso_cubos"] = mensaje_error(e)
         resultado["ok"] = True
     except Exception as e:  # noqa: BLE001
-        resultado["error"] = mensaje_error(e)
+        resultado["error"] = mensaje_error(e, tarea)
         resultado["traza"] = traceback.format_exc()[-4000:]
     finally:
         resultado["tiempo_s"] = round(time.time() - t0, 2)

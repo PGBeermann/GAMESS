@@ -16,8 +16,8 @@
   const METODOS = ['hf', 'b3lyp', 'pbe0', 'wb97x-d', 'm06-2x', 'mp2'];
   const BASES = ['sto-3g', '3-21g', '6-31g', '6-31g*', '6-31g**', '6-31+g*', '6-311g**', 'cc-pvdz', 'aug-cc-pvdz', 'def2-svp', 'def2-tzvp'];
   // Opciones que no cambian el resultado químico (o que el servidor ya fija): se ignoran sin aviso
-  const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads)$/;
-  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias' };
+  const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads|full_hess_every|step_type|hess_update)$/;
+  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias' };
   const ELEMENTOS = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr I').split(' '));
 
   function normalizarMetodo(m, avisos) {
@@ -156,13 +156,18 @@
     const lineas = resto.split('\n').map((l) => l.replace(/#.*$/, '').trim()).filter(Boolean);
 
     // Opciones: «set basis X», «set globals basis X» y bloques «set { … }»
-    let base = null; const ignoradas = [];
+    let base = null; let esTS = false; const ignoradas = [];
     const opcion = (clave, valor) => {
       const k = clave.toLowerCase();
       if (k === 'basis') base = valor;
-      else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
+      else if (k === 'opt_type') {
+        const v = valor.trim().toLowerCase();
+        if (v === 'ts') esTS = true;
+        else if (v === 'irc') throw new Error('Los cálculos IRC («opt_type irc») no están disponibles en este servidor.');
+      } else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
     };
-    const bloques = /set\s*(?:globals\s*)?\{([\s\S]*?)\}/gi;
+    // set { … }, set globals { … } o con nombre de módulo: set optking { … }, set scf { … }
+    const bloques = /set\s*(?:\w+\s*)?\{([\s\S]*?)\}/gi;
     let b;
     const textoResto = lineas.join('\n');
     while ((b = bloques.exec(textoResto))) {
@@ -183,8 +188,16 @@
     const fs = new Set(llamadas.map((l) => l.funcion));
     const hayOpt = fs.has('optimize') || fs.has('opt');
     const hayFreq = fs.has('frequency') || fs.has('frequencies') || fs.has('freq') || fs.has('hessian');
-    const tarea = hayFreq ? 'frecuencias' : hayOpt ? 'optimizacion' : 'energia';
-    if (hayFreq && !hayOpt) avisos.push('Este servidor optimiza la geometría antes de calcular las frecuencias.');
+    // opt_type también puede ir en optimize(…, optimizer_keywords={'opt_type': 'TS'})
+    if (/['"]?opt_type['"]?\s*[:=]\s*['"]ts['"]/i.test(sinBloques)) esTS = true;
+    let tarea = hayFreq ? 'frecuencias' : hayOpt ? 'optimizacion' : 'energia';
+    if (esTS) {
+      if (tarea === 'energia') avisos.push('«opt_type ts» sin optimize(…) ni frequency(…): se calcula sólo la energía.');
+      else {
+        tarea = 'ts';
+        avisos.push('Se buscará un estado de transición (opt_type ts): primero se calcula el hessiano exacto y al final las frecuencias, que deben dar una sola frecuencia imaginaria.');
+      }
+    } else if (hayFreq && !hayOpt) avisos.push('Este servidor optimiza la geometría (busca un mínimo) antes de calcular las frecuencias. Si su geometría es un estado de transición, añada «set opt_type ts».');
     if (fs.has('gradient')) avisos.push('gradient(…) se trata como un cálculo de energía.');
     let metodoTxt = llamadas[llamadas.length - 1].metodo;
     if (metodoTxt.includes('/')) { const [m, bb] = metodoTxt.split('/'); metodoTxt = m; if (!base) base = bb; }
@@ -219,6 +232,8 @@
       energia: [`E, wfn = energy('${metodo}', return_wfn=True)`],
       optimizacion: [`E, wfn = optimize('${metodo}', return_wfn=True)`],
       frecuencias: [`optimize('${metodo}')`, `E, wfn = frequency('${metodo}', return_wfn=True)`],
+      ts: ['# Búsqueda del estado de transición; las frecuencias deben dar una sola imaginaria',
+        `optimize('${metodo}')`, `E, wfn = frequency('${metodo}', return_wfn=True)`],
     }[tarea];
     const lineasXYZ = String(xyz).trim().split(/\r?\n/).map((l) => {
       const [el, x, y, z] = l.trim().split(/\s+/);
@@ -245,6 +260,7 @@
       `  basis ${NOMBRE_BASE_PSI4[base] || base}`,
       `  reference ${ref}`,
       '  scf_type df',
+      ...(tarea === 'ts' ? ['  opt_type ts', '  full_hess_every 0'] : []),
       '}',
       '',
       ...llamadas,
