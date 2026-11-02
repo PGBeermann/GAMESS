@@ -35,6 +35,15 @@ el potencial electrostático y las vibraciones.
      (3–60) y paso (0.05–0.5 bohr·amu½). Los puntos se leen del `.opt.json` que escribe Psi4
      con `write_opt_history`. En un .in: `set opt_type irc`, `irc_direction`, `irc_points`,
      `irc_step_size`. Tras un TS con una sola imaginaria aparece «Calcular IRC desde este TS».
+   - **Scan relajado de una distancia**: átomos i–j y valores (desde/hasta/paso, hasta 30
+     puntos). En cada punto se coloca la distancia moviendo rígidamente el fragmento unido a j,
+     se congela con `frozen_distance` (optking 0.5 ya no tiene `fixed_distance`) y se optimiza el
+     resto, partiendo del punto anterior. La salida de Psi4 (.out) termina con la tabla
+     «SCAN RELAJADO» (R, E, ΔE) escrita con `psi4.core.print_out`; la página muestra la curva
+     E vs R, la tabla, la animación y descargas CSV/XYZ. Se lee de un .in con
+     `fixed_/frozen_/ranged_distance` y un bucle `for` (lista, `np.arange`, `np.linspace`).
+   - **El servidor no ejecuta el código Python de un .in** (seguridad): interpreta la molécula,
+     el nivel de teoría y el tipo de cálculo, y avisa si el archivo trae código que no se ejecuta.
 4. **Resultados**:
    - Energía total (E<sub>h</sub>, kcal/mol, eV) y sus componentes
    - Momento dipolar, cargas de Mulliken (también como colores y etiquetas en 3D)

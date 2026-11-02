@@ -102,7 +102,9 @@ function actualizarEstimacion() {
   const ft = {
     energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1),
     irc: dirs * ((metodo === 'hf' ? 5 : 3 * (n || 1)) + 4 * puntosIrc),
+    scan: 6 * (opcionesScanForm(true).valores.length || 1), // una optimización corta por punto
   }[tarea] || 1;
+  actualizarInfoScan();
   if (!pesados) { $('#estimacion').textContent = ''; return; }
   const seg = 0.04 * Math.pow(Math.max(pesados, 1), 3) * fb * fm * ft; // segundos aproximados con 4 hilos
   const nivel = seg < 40 ? 'rápido (segundos)' : seg < 240 ? 'moderado (1–4 min)' : seg < 1200 ? 'lento (4–20 min)' : 'muy lento: considere una base más pequeña o «Energía»';
@@ -458,6 +460,7 @@ async function aplicarEditor(avisosExtra = []) {
     $('#ircPuntos').value = datos.irc.puntos;
     $('#ircPaso').value = datos.irc.paso;
   }
+  if (datos.scan) ponerScanEnFormulario(datos.scan);
   mostrarOpcionesIRC();
   if (datos.mep) $('#mep').checked = true;
   $('#infoMolecula').innerHTML = `<strong>${esc(nombre)}</strong>: ${esc(g.formula)} · ${g.natomos} átomos · ${g.electrones} electrones · carga ${datos.carga} · multiplicidad ${datos.multiplicidad} · ${esc(nombreDe('metodos', datos.metodo))}/${esc(nombreDe('bases', datos.base))} · ${esc(nombreDe('tareas', datos.tarea))}`;
@@ -482,7 +485,7 @@ async function abrirArchivo(archivo) {
       texto = generarEntradaPsi4({
         titulo: x.titulo || archivo.name.replace(/\.[^.]+$/, ''), xyz: x.xyz, carga: 0, multiplicidad: 1,
         metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: $('#tarea').value || 'energia',
-        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
+        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true),
       });
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
     }
@@ -507,8 +510,64 @@ async function entradaDesdeFormulario() {
     titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
     metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
     memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
+    scan: $('#tarea').value === 'scan' ? opcionesScanForm() : null,
   });
   return { texto, nombre: `${nombreSeguro(titulo)}.in` };
+}
+
+// ---------- Opciones del scan relajado en el formulario ----------
+const firmaScan = () => ['#scanI', '#scanJ', '#scanDesde', '#scanHasta', '#scanPaso'].map((s) => $(s).value).join('|');
+
+// Distancia actual entre dos átomos (desde 1) de la geometría cargada
+function distanciaActual(i, j) {
+  const c = leerCoordenadas(estado.geom?.xyz || '');
+  if (!c[i - 1] || !c[j - 1] || i === j) return null;
+  return { r: Math.hypot(...c[i - 1].p.map((v, k) => v - c[j - 1].p[k])), etq: `${c[i - 1].e}${i}–${c[j - 1].e}${j}` };
+}
+
+// Lista de distancias: la del .in aplicado si el formulario no cambió, o desde/hasta/paso
+function opcionesScanForm(silencioso = false) {
+  const atomos = [parseInt($('#scanI').value, 10), parseInt($('#scanJ').value, 10)];
+  if (estado.scanEditor && estado.scanEditor.firma === firmaScan()) return { atomos, valores: estado.scanEditor.valores };
+  const desde = parseFloat($('#scanDesde').value); const hasta = parseFloat($('#scanHasta').value);
+  const paso = Math.abs(parseFloat($('#scanPaso').value)) || 0.1;
+  if (!Number.isFinite(desde) || !Number.isFinite(hasta)) {
+    if (silencioso) return { atomos, valores: [] };
+    throw new Error('Scan: indique las distancias «Desde» y «Hasta».');
+  }
+  const n = Math.round(Math.abs(hasta - desde) / paso) + 1;
+  const signo = hasta >= desde ? 1 : -1;
+  const valores = Array.from({ length: Math.min(n, 30) }, (_, k) => +(desde + signo * k * paso).toFixed(4));
+  return { atomos, valores, recortado: n > 30 };
+}
+
+function ponerScanEnFormulario(scan) {
+  const [i, j] = scan.atomos; const v = scan.valores;
+  $('#scanI').value = i; $('#scanJ').value = j;
+  $('#scanDesde').value = v[0]; $('#scanHasta').value = v[v.length - 1];
+  if (v.length > 1) $('#scanPaso').value = +Math.abs(v[1] - v[0]).toFixed(4);
+  estado.scanEditor = { valores: v, firma: firmaScan() }; // conserva listas no uniformes del .in
+  actualizarInfoScan();
+}
+
+function actualizarInfoScan() {
+  if ($('#tarea').value !== 'scan') return;
+  const nat = estado.geom?.natomos || 0;
+  ['#scanI', '#scanJ'].forEach((s) => { $(s).max = nat || ''; });
+  const i = parseInt($('#scanI').value, 10); const j = parseInt($('#scanJ').value, 10);
+  const d = distanciaActual(i, j);
+  if (d && !$('#scanDesde').value && !$('#scanHasta').value) {
+    // Valores iniciales razonables alrededor de la distancia actual
+    $('#scanDesde').value = Math.max(0.5, d.r - 0.2).toFixed(2);
+    $('#scanHasta').value = Math.min(6, d.r + 0.8).toFixed(2);
+  }
+  let txt = d ? `R(${d.etq}) actual = ${d.r.toFixed(3)} Å. ` : `Elija dos átomos distintos entre 1 y ${nat || '?'} (active «Etiquetas» en el visor para ver la numeración). `;
+  try {
+    const o = opcionesScanForm();
+    txt += `${o.valores.length} punto(s): ${o.valores.slice(0, 6).join(', ')}${o.valores.length > 6 ? ', …' : ''} Å${o.recortado ? ' (máximo 30 puntos)' : ''}. `;
+  } catch { /* faltan valores */ }
+  txt += 'En cada punto se fija la distancia i–j (moviendo el fragmento unido a j) y se optimiza el resto.';
+  $('#scanInfo').textContent = txt;
 }
 
 // ---------- Opciones del IRC en el formulario ----------
@@ -519,8 +578,10 @@ function opcionesIRCForm() {
 }
 
 function mostrarOpcionesIRC() {
-  const irc = $('#tarea').value === 'irc';
-  $$('.solo-irc').forEach((el) => { el.hidden = !irc; });
+  const tarea = $('#tarea').value;
+  $$('.solo-irc').forEach((el) => { el.hidden = tarea !== 'irc'; });
+  $$('.solo-scan').forEach((el) => { el.hidden = tarea !== 'scan'; });
+  actualizarInfoScan();
 }
 
 async function verEntradaActual() {
@@ -636,10 +697,11 @@ async function lanzarCalculo() {
     carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
     mep: $('#mep').checked,
     irc: $('#tarea').value === 'irc' ? opcionesIRCForm() : undefined,
+    scan: $('#tarea').value === 'scan' ? opcionesScanForm() : undefined,
   };
   const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
   // En un IRC los enlaces cambian a lo largo del camino: no se fijan los del dibujo
-  if (g.molblock && cuerpo.tarea !== 'irc') estado.molblocks.set(t.id, g.molblock);
+  if (g.molblock && !['irc', 'scan'].includes(cuerpo.tarea)) estado.molblocks.set(t.id, g.molblock);
   guardarEnHistorial(t);
   seguir(t.id);
   return t;
@@ -868,7 +930,7 @@ function mostrarError(t) {
 function etiquetaModeloResultado() {
   const t = estado.infoTrabajo;
   if (!t) return;
-  const tipo = { energia: 'geometría de entrada', ts: 'estado de transición', irc: 'estado de transición (inicio del IRC)' }[t.tarea] || 'geometría optimizada';
+  const tipo = { energia: 'geometría de entrada', ts: 'estado de transición', irc: 'estado de transición (inicio del IRC)', scan: 'punto de menor energía del scan' }[t.tarea] || 'geometría optimizada';
   $('#etiquetaModelo').textContent = `${t.titulo} · ${nombreDe('metodos', t.metodo)}/${nombreDe('bases', t.base)} · ${tipo}`;
 }
 
@@ -895,6 +957,9 @@ function mostrarResultado(t) {
   if (r.irc?.puntos?.length) {
     $('#tabOpt').textContent = 'Camino IRC';
     panelIRC(t, r);
+  } else if (r.scan?.puntos?.length) {
+    $('#tabOpt').textContent = 'Scan';
+    panelScan(t, r);
   } else {
     $('#tabOpt').textContent = 'Optimización';
     panelOptimizacion(r);
@@ -902,7 +967,7 @@ function mostrarResultado(t) {
   panelArchivos(t, r);
   $('#tabVib').disabled = false;
   prepararVibraciones(r);
-  $('#tabOpt').disabled = !(r.trayectoria?.length || r.irc?.puntos?.length);
+  $('#tabOpt').disabled = !(r.trayectoria?.length || r.irc?.puntos?.length || r.scan?.puntos?.length);
   abrirPestana('resumen');
 }
 
@@ -938,7 +1003,15 @@ function panelResumen(t, r) {
     <button class="btn sec chico" type="button" data-guardar="in">Guardar entrada (.in)</button>
     ${r.tarea === 'ts' && f?.n_imaginarias === 1 ? '<button class="btn chico" type="button" id="lanzarIRC" title="Sigue el camino de mínima energía desde este TS hacia reactivos y productos">Calcular IRC desde este TS</button>' : ''}
   </div><div class="cifras">`;
-  html += cifra(r.tarea === 'irc' ? 'Energía del TS' : 'Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  html += cifra({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan' }[r.tarea] || 'Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  const sc = r.scan;
+  if (sc) {
+    const v = sc.puntos.map((p) => p.r);
+    html += cifra(`Scan R(${esc(sc.etiqueta)})`, `${v.length} punto(s)`, `de ${fx(v[0], 3)} a ${fx(v[v.length - 1], 3)} Å`);
+    html += cifra('Mínimo del scan', `R = ${fx(sc.r_minimo, 3)} Å`, 'Geometría usada para orbitales, cargas y superficies');
+    html += cifra('Máximo del scan', `R = ${fx(sc.r_maximo, 3)} Å`, `${fx(sc.rango_kcal, 2)} kcal/mol por encima del mínimo`);
+    if (sc.no_convergidos) html += cifra('Puntos sin converger', String(sc.no_convergidos), 'Marcados en naranja en la pestaña «Scan»');
+  }
   const irc = r.irc;
   if (irc) {
     const extremos = { '−': irc.barrera_desde_atras_kcal, '+': irc.barrera_desde_adelante_kcal };
@@ -1482,6 +1555,92 @@ function panelIRC(t, r) {
   $('#infoPaso').textContent = 'Pulse un punto o «Reproducir reacción».';
 }
 
+// ---------- Scan relajado ----------
+function panelScan(t, r) {
+  const panel = $('[data-panel="optimizacion"]');
+  const sc = r.scan;
+  const pts = sc.puntos.filter((p) => p.energia != null);
+  const W = 760; const H = 280; const m = { l: 62, r: 16, t: 18, b: 44 };
+  const xs = pts.map((p) => p.r); const ys = pts.map((p) => p.de_min_kcal);
+  const xmin = Math.min(...xs); const xmax = Math.max(...xs);
+  const ymin = 0; const ymax = Math.max(...ys, 0.1);
+  const X = (s) => (xmax > xmin ? m.l + ((s - xmin) / (xmax - xmin)) * (W - m.l - m.r) : (W + m.l) / 2);
+  const Y = (v) => H - m.b - ((v - ymin) / (ymax - ymin)) * (H - m.t - m.b);
+  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="Energía del scan relajado">`;
+  for (let k = 0; k <= 4; k++) {
+    const v = ymin + (k / 4) * (ymax - ymin);
+    svg += `<line class="rejilla" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`;
+  }
+  pts.forEach((p) => { svg += `<text x="${X(p.r)}" y="${H - m.b + 16}" text-anchor="middle">${p.r.toFixed(2)}</text>`; });
+  svg += `<line class="eje" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
+  svg += `<text x="${(W + m.l) / 2}" y="${H - 6}" text-anchor="middle">R(${esc(sc.etiqueta)}) (Å)</text>`;
+  svg += `<text x="14" y="${(H - m.b + m.t) / 2}" text-anchor="middle" transform="rotate(-90 14 ${(H - m.b + m.t) / 2})">E − E(mín) (kcal/mol)</text>`;
+  if (pts.length > 1) svg += `<path class="curva" d="M${pts.map((p) => `${X(p.r).toFixed(1)},${Y(p.de_min_kcal).toFixed(1)}`).join('L')}"/>`;
+  pts.forEach((p, i) => {
+    svg += `<circle class="punto${p.convergio ? '' : ' sin-converger'}" data-paso="${i}" cx="${X(p.r)}" cy="${Y(p.de_min_kcal)}" r="5.5" style="cursor:pointer"><title>R = ${p.r.toFixed(3)} Å · E = ${p.energia.toFixed(8)} Eh · ΔE(mín) = ${p.de_min_kcal.toFixed(2)} kcal/mol${p.convergio ? '' : ' · no convergió'}</title></circle>`;
+  });
+  svg += '</svg>';
+  panel.innerHTML = `${svg}
+    <div class="controles-fila">
+      <button class="btn sec chico" type="button" id="reproducirOpt">▶ Reproducir scan</button>
+      <label>Punto <input type="range" id="pasoOpt" min="0" max="${pts.length - 1}" value="0"></label>
+      <button class="btn sec chico" type="button" id="bajarScanCSV">Tabla CSV</button>
+      <button class="btn sec chico" type="button" id="bajarScanXYZ" title="Todas las geometrías del scan como XYZ de varios cuadros (Avogadro, Jmol, VMD)">XYZ animado</button>
+      <span id="infoPaso" class="nota"></span>
+    </div>
+    <div class="tabla-scroll"><table><thead><tr><th class="num">R (Å)</th><th class="num">R final (Å)</th><th class="num">E (E<sub>h</sub>)</th><th class="num">ΔE vs. 1.º (kcal/mol)</th><th class="num">ΔE vs. mín (kcal/mol)</th><th></th></tr></thead><tbody>
+      ${sc.puntos.map((p, i) => `<tr data-fila="${i}"><td class="num">${p.r.toFixed(3)}</td><td class="num">${fx(p.r_final, 4)}</td><td class="num">${fx(p.energia, 8)}</td><td class="num">${fx(p.de_kcal, 3)}</td><td class="num">${fx(p.de_min_kcal, 3)}</td><td>${p.convergio ? '' : `<span class="aviso-chico" title="${esc(p.nota)}">no convergió</span>`}</td></tr>`).join('')}
+    </tbody></table></div>
+    <p class="nota">En cada punto la distancia ${esc(sc.etiqueta)} queda fija y el resto de la molécula se optimiza. La misma tabla está al final de la salida de Psi4 (.out), en «SCAN RELAJADO».</p>`;
+  const verPaso = (i) => {
+    i = Math.max(0, Math.min(pts.length - 1, i));
+    const p = pts[i];
+    $('#pasoOpt').value = i;
+    $('#infoPaso').textContent = `R = ${p.r.toFixed(3)} Å · E = ${p.energia.toFixed(8)} Eh · ΔE(mín) = ${p.de_min_kcal.toFixed(2)} kcal/mol`;
+    $$('[data-panel="optimizacion"] [data-paso]').forEach((c) => c.classList.toggle('activo', c.dataset.paso === String(i)));
+    const v = estado.visor;
+    v.stopAnimate();
+    quitarFlechas();
+    estado.modoActivo = null;
+    $('#vibPlay').textContent = '▶ Animar';
+    v.removeAllModels();
+    v.addModel(xyzCompleto(p.xyz), 'xyz');
+    aplicarEstilo();
+    $('#etiquetaModelo').textContent = `Scan · punto ${i + 1} de ${pts.length} · R(${sc.etiqueta}) = ${p.r.toFixed(2)} Å`;
+  };
+  const detener = () => { clearInterval(estado.reproductor); estado.reproductor = null; $('#reproducirOpt').textContent = '▶ Reproducir scan'; };
+  $('#pasoOpt').addEventListener('input', (e) => { detener(); verPaso(parseInt(e.target.value, 10)); });
+  panel.querySelector('svg').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-paso]');
+    if (c) { detener(); verPaso(parseInt(c.dataset.paso, 10)); }
+  });
+  $('#reproducirOpt').addEventListener('click', () => {
+    if (estado.reproductor) { detener(); return; }
+    estado.visor.stopAnimate();
+    let i = 0; let sentido = 1;
+    $('#reproducirOpt').textContent = '■ Detener';
+    verPaso(0);
+    estado.reproductor = setInterval(() => {
+      if (i + sentido < 0 || i + sentido >= pts.length) sentido = -sentido;
+      i += sentido;
+      verPaso(i);
+    }, 450);
+  });
+  $('#bajarScanCSV').addEventListener('click', () => {
+    const filas = [['R_A', 'R_final_A', 'E_Eh', 'dE_primero_kcal_mol', 'dE_minimo_kcal_mol', 'convergio']];
+    sc.puntos.forEach((p) => filas.push([p.r.toFixed(4), fx(p.r_final, 5), fx(p.energia, 10), fx(p.de_kcal, 4), fx(p.de_min_kcal, 4), p.convergio ? 'si' : 'no']));
+    descargar(filas.map((f) => f.join(',')).join('\n') + '\n', `${nombreSeguro(t.titulo)}_scan.csv`, 'text/csv');
+  });
+  $('#bajarScanXYZ').addEventListener('click', () => {
+    const marcos = pts.map((p) => {
+      const l = p.xyz.trim().split(/\r?\n/);
+      return `${l.length}\nScan R(${sc.etiqueta}) = ${p.r.toFixed(4)} A  E = ${p.energia.toFixed(8)}\n${l.join('\n')}`;
+    });
+    descargar(`${marcos.join('\n')}\n`, `${nombreSeguro(t.titulo)}_scan.xyz`);
+  });
+  $('#infoPaso').textContent = 'Pulse un punto o «Reproducir scan».';
+}
+
 // Lanza un IRC desde la geometría del TS de este resultado
 async function calcularIRC(boton) {
   const t = estado.infoTrabajo;
@@ -1595,6 +1754,7 @@ function eventos() {
   });
   ['#metodo', '#base', '#tarea', '#ircDireccion', '#ircPuntos'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
   $('#tarea').addEventListener('change', mostrarOpcionesIRC);
+  ['#scanI', '#scanJ', '#scanDesde', '#scanHasta', '#scanPaso'].forEach((s) => $(s).addEventListener('input', actualizarEstimacion));
 
   $('#estilo').addEventListener('change', () => {
     if (estado.modoActivo) animarModo(estado.modoActivo); else aplicarEstilo();

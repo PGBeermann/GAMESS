@@ -65,7 +65,20 @@ const TAREAS = [
   { id: 'frecuencias', nombre: 'Optimización + frecuencias (IR y termoquímica)' },
   { id: 'ts', nombre: 'Estado de transición (TS) + frecuencias' },
   { id: 'irc', nombre: 'Camino de reacción IRC (desde un TS)' },
+  { id: 'scan', nombre: 'Scan relajado de una distancia' },
 ];
+
+// Opciones del scan relajado: dos átomos (desde 1) y hasta 30 distancias entre 0.5 y 6 Å
+function opcionesScan(o = {}, natomos = 0) {
+  const atomos = (Array.isArray(o.atomos) ? o.atomos : []).slice(0, 2).map((a) => Math.round(Number(a)));
+  if (atomos.length !== 2 || atomos[0] === atomos[1] || !atomos.every((a) => a >= 1 && a <= natomos)) {
+    throw new Error(`Scan: indique dos átomos distintos entre 1 y ${natomos}.`);
+  }
+  const valores = (Array.isArray(o.valores) ? o.valores : []).map(Number).filter(Number.isFinite);
+  if (valores.length < 1 || valores.length > 30) throw new Error('Scan: se necesitan entre 1 y 30 distancias.');
+  if (valores.some((v) => v < 0.5 || v > 6)) throw new Error('Scan: las distancias deben estar entre 0.5 y 6 Å.');
+  return { atomos, valores: valores.map((v) => Math.round(v * 10000) / 10000) };
+}
 
 // Opciones del IRC (dirección, puntos por dirección y tamaño de paso en bohr·amu^½), acotadas
 function opcionesIRC(o = {}) {
@@ -372,6 +385,7 @@ app.post('/api/calculos', async (req, res) => {
     const id = crypto.randomUUID();
     const titulo = String(b.titulo || 'molécula').replace(/[^\p{L}\p{N} ()\-_,.+=#]/gu, '').slice(0, 80) || 'molécula';
     const irc = tarea.id === 'irc' ? opcionesIRC(b.irc) : undefined;
+    const scan = tarea.id === 'scan' ? opcionesScan(b.scan, g.natomos) : undefined;
     const t = {
       id, estado: 'en_cola', creado: ahora(), ip,
       titulo, formula: String(b.formula || '').slice(0, 60), smiles: String(b.smiles || '').slice(0, 500),
@@ -380,12 +394,12 @@ app.post('/api/calculos', async (req, res) => {
     await fsp.mkdir(carpetaDe(id), { recursive: true });
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.json'), JSON.stringify({
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      mep: b.mep !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc,
+      mep: b.mep !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan,
     }));
     // Entrada .in equivalente, para descargarla y ejecutarla con Psi4 fuera del servidor
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), generarEntradaPsi4({
       titulo, xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      memoria: CONFIG.memoria, mep: b.mep !== false, irc,
+      memoria: CONFIG.memoria, mep: b.mep !== false, irc, scan,
     }));
     trabajos.set(id, t);
     await guardarMeta(t);

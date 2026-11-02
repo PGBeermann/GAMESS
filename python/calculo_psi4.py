@@ -4,7 +4,7 @@ Uso:  python calculo_psi4.py <carpeta_del_trabajo>
 
 La carpeta debe contener `entrada.json` (lo escribe servidor.js):
     {"xyz": "C 0 0 0\\nH ...", "carga": 0, "multiplicidad": 1,
-     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts|irc",
+     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts|irc|scan",
      "mep": true, "hilos": 2, "memoria": "2 GB", "titulo": "etanol"}
 
 Archivos que produce en la carpeta:
@@ -34,7 +34,7 @@ AU_DEBYE = psi4.constants.dipmom_au2debye
 METODOS = {"hf", "b3lyp", "pbe0", "wb97x-d", "m06-2x", "mp2"}
 BASES = {"sto-3g", "3-21g", "6-31g", "6-31g*", "6-31g**", "6-31+g*", "6-311g**",
          "cc-pvdz", "aug-cc-pvdz", "def2-svp", "def2-tzvp"}
-TAREAS = {"energia", "optimizacion", "frecuencias", "ts", "irc"}
+TAREAS = {"energia", "optimizacion", "frecuencias", "ts", "irc", "scan"}
 
 
 def etapa(texto):
@@ -240,6 +240,106 @@ def irc(metodo, mol, direccion="ambas", puntos=20, paso=0.2):
     if atras and adelante:
         resumen["energia_reaccion_kcal"] = (adelante[-1]["energia"] - atras[-1]["energia"]) * HARTREE_KCAL
     return resumen
+
+
+# Radios covalentes (Å) para deducir qué átomos se mueven junto con el átomo j en el scan
+RADIOS_COV = {"H": 0.31, "He": 0.28, "Li": 1.28, "Be": 0.96, "B": 0.84, "C": 0.76, "N": 0.71, "O": 0.66,
+              "F": 0.57, "Ne": 0.58, "Na": 1.66, "Mg": 1.41, "Al": 1.21, "Si": 1.11, "P": 1.07, "S": 1.05,
+              "Cl": 1.02, "Ar": 1.06, "K": 2.03, "Ca": 1.76, "Br": 1.20, "I": 1.39}
+
+
+def colocar_distancia(mol, i, j, valor):
+    """Pone la distancia i–j (índices desde 0) en `valor` Å moviendo rígidamente el fragmento de j.
+
+    El fragmento es lo que queda unido a j si se corta el enlace i–j (p. ej. el CH3 de un
+    CH3–Cl si j es el C). Si i y j están en un anillo, sólo se mueve el átomo j.
+    """
+    simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
+    x = a_numpy(mol.geometry()).reshape(-1, 3) * BOHR_ANG
+    n = len(simbolos)
+    radio = [RADIOS_COV.get(s, 1.5) for s in simbolos]
+    fragmento, pila = {j}, [j]
+    while pila:
+        a = pila.pop()
+        for b in range(n):
+            if b not in fragmento and {a, b} != {i, j} and np.linalg.norm(x[a] - x[b]) < 1.2 * (radio[a] + radio[b]):
+                fragmento.add(b)
+                pila.append(b)
+    if i in fragmento:
+        fragmento = {j}
+    v = x[j] - x[i]
+    d = float(np.linalg.norm(v))
+    for k in fragmento:
+        x[k] += (valor - d) * v / d
+    mol.set_geometry(psi4.core.Matrix.from_array(x / BOHR_ANG))
+    mol.update_geometry()
+
+
+def distancia(mol, i, j):
+    x = a_numpy(mol.geometry()).reshape(-1, 3) * BOHR_ANG
+    return float(np.linalg.norm(x[i] - x[j]))
+
+
+def scan_relajado(metodo, mol, atomos, valores):
+    """Scan relajado de la distancia entre dos átomos (numerados desde 1).
+
+    Para cada valor se coloca la distancia, se congela (optking: frozen_distance) y se optimiza
+    el resto de la molécula, partiendo de la geometría optimizada del punto anterior. Al final
+    se escribe la tabla del scan en la salida de Psi4 (.out).
+    """
+    i, j = atomos[0] - 1, atomos[1] - 1
+    simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
+    etiqueta = f"{simbolos[i]}{atomos[0]}–{simbolos[j]}{atomos[1]}"
+    contador, puntos = [0], []
+    psi4.set_options({"frozen_distance": f"{atomos[0]} {atomos[1]}"})
+    with en_vivo(mol, contador):
+        for k, valor in enumerate(valores, 1):
+            etapa(f"Scan relajado {etiqueta}: punto {k} de {len(valores)} (R = {valor:.3f} Å)")
+            colocar_distancia(mol, i, j, valor)
+            convergio, nota = True, ""
+            try:
+                energia = float(psi4.optimize(metodo, molecule=mol))
+            except Exception as e:  # noqa: BLE001
+                if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
+                    raise
+                convergio, nota = False, mensaje_error(e)
+                energia = variable_global("CURRENT ENERGY")
+            sim, coords = geometria_actual(mol)
+            puntos.append({"r": float(valor), "r_final": distancia(mol, i, j), "energia": energia,
+                           "convergio": convergio, "nota": nota, "xyz": texto_xyz(sim, coords)})
+    psi4.set_options({"frozen_distance": ""})
+
+    validos = [p for p in puntos if p["energia"] is not None]
+    if not validos:
+        raise RuntimeError("Ningún punto del scan produjo una energía.")
+    e_ref = validos[0]["energia"]
+    e_min = min(p["energia"] for p in validos)
+    for p in puntos:
+        p["de_kcal"] = None if p["energia"] is None else (p["energia"] - e_ref) * HARTREE_KCAL
+        p["de_min_kcal"] = None if p["energia"] is None else (p["energia"] - e_min) * HARTREE_KCAL
+
+    # Tabla en el .out (como haría un script de Psi4 con psi4.core.print_out)
+    psi4.core.print_out(f"\n\n===== SCAN RELAJADO {etiqueta} ({metodo.upper()}) =====\n")
+    psi4.core.print_out("ΔE respecto al primer punto; la distancia queda congelada en cada optimización.\n\n")
+    for p in puntos:
+        if p["energia"] is None:
+            psi4.core.print_out(f"R({etiqueta}) = {p['r']:6.3f} Å   sin energía ({p['nota']})\n")
+            continue
+        aviso = "" if p["convergio"] else "   (no convergió)"
+        psi4.core.print_out(f"R({etiqueta}) = {p['r']:6.3f} Å   E = {p['energia']:.10f} Eh   "
+                            f"ΔE = {p['de_kcal']:8.3f} kcal/mol{aviso}\n")
+    psi4.core.print_out("=" * 60 + "\n")
+
+    minimo = min(validos, key=lambda p: p["energia"])
+    maximo = max(validos, key=lambda p: p["energia"])
+    # Las propiedades (orbitales, cargas…) se calculan en el punto de menor energía
+    mol.set_geometry(psi4.core.Matrix.from_array(
+        np.array([[float(v) for v in l.split()[1:4]] for l in minimo["xyz"].splitlines()]) / BOHR_ANG))
+    mol.update_geometry()
+    return {"atomos": list(atomos), "etiqueta": etiqueta, "puntos": puntos,
+            "r_minimo": minimo["r"], "r_maximo": maximo["r"],
+            "rango_kcal": (maximo["energia"] - minimo["energia"]) * HARTREE_KCAL,
+            "no_convergidos": sum(1 for p in puntos if not p["convergio"])}
 
 
 def propiedades_scf(scf, n_atomos, simbolos):
@@ -453,6 +553,15 @@ def main():
             paso = min(0.5, max(0.05, float(op.get("paso") or 0.2)))
             resultado["irc"] = irc(metodo, mol, direccion, puntos, paso)
             etapa("Calculando la función de onda en el estado de transición")
+            energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
+        elif tarea == "scan":
+            op = entrada.get("scan") or {}
+            atomos = [int(a) for a in (op.get("atomos") or [])][:2]
+            valores = [float(v) for v in (op.get("valores") or [])][:30]
+            if len(atomos) != 2 or len(set(atomos)) != 2 or not all(1 <= a <= n_atomos for a in atomos) or not valores:
+                raise ValueError("Opciones del scan no válidas.")
+            resultado["scan"] = scan_relajado(metodo, mol, atomos, valores)
+            etapa("Calculando la función de onda en el punto de menor energía del scan")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         else:
             if tarea == "ts":

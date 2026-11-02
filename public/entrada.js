@@ -17,7 +17,7 @@
   const BASES = ['sto-3g', '3-21g', '6-31g', '6-31g*', '6-31g**', '6-31+g*', '6-311g**', 'cc-pvdz', 'aug-cc-pvdz', 'def2-svp', 'def2-tzvp'];
   // Opciones que no cambian el resultado químico (o que el servidor ya fija): se ignoran sin aviso
   const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads|full_hess_every|step_type|hess_update|write_opt_history)$/;
-  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC' };
+  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado de una distancia' };
   const ELEMENTOS = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr I').split(' '));
 
   function normalizarMetodo(m, avisos) {
@@ -171,7 +171,7 @@
       } else if (k === 'irc_points') irc.puntos = parseInt(v, 10);
       else if (k === 'irc_step_size') irc.paso = parseFloat(v);
       else if (k === 'irc_mode' || k === 'irc_convergence') ignoradas.push(`${clave} ${valor}`);
-      else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
+      else if (/^(fixed|frozen|ranged)_distance$/.test(k)) { /* restricción del scan: se lee aparte */ } else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
     };
     // set { … }, set globals { … } o con nombre de módulo: set optking { … }, set scf { … }
     const bloques = /set\s*(?:\w+\s*)?\{([\s\S]*?)\}/gi;
@@ -200,7 +200,12 @@
     if (/['"]?opt_type['"]?\s*[:=]\s*['"]irc['"]/i.test(sinBloques)) esIRC = true;
     let tarea = hayFreq ? 'frecuencias' : hayOpt ? 'optimizacion' : 'energia';
     let opcionesIrc = null;
-    if (esIRC) {
+    // Scan relajado: una distancia restringida (fixed_/frozen_/ranged_distance) y, en general,
+    // un bucle for con los valores. El servidor hace el scan equivalente (no ejecuta el bucle).
+    const opcionesScan = (hayOpt && !esIRC && !esTS) ? leerScan(textoResto, sinBloques, xyz, avisos) : null;
+    if (opcionesScan) {
+      tarea = 'scan';
+    } else if (esIRC) {
       if (!hayOpt) throw new Error('«opt_type irc» necesita una llamada optimize(…): el IRC lo recorre el optimizador.');
       tarea = 'irc';
       const direccion = irc.direcciones.size === 1 ? [...irc.direcciones][0] : 'ambas';
@@ -226,10 +231,86 @@
     if (!base) { base = '6-31g*'; avisos.push('El archivo no indicaba la base: se usa 6-31G(d).'); }
     const baseId = normalizarBase(base);
     if (ignoradas.length) avisos.push(`Opciones ignoradas: ${ignoradas.slice(0, 6).join('; ')}${ignoradas.length > 6 ? '…' : ''}`);
+    // Código Python que el servidor no ejecuta (bucles, print_out, variables…): se avisa
+    if (tarea !== 'scan') {
+      const codigo = sinBloques.split('\n').map((l) => l.trim()).filter((l) => l && !LINEA_CONOCIDA.test(l));
+      if (codigo.length) {
+        avisos.push(`El archivo contiene código Python que el servidor no ejecuta (p. ej. «${codigo[0].slice(0, 70)}»${codigo.length > 1 ? ` y ${codigo.length - 1} línea(s) más` : ''}): sólo se interpretan la molécula, el método, la base y el tipo de cálculo. Para un scan relajado use «frozen_distance» (o «fixed_distance») con un bucle for.`);
+      }
+    }
     return {
       titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos,
-      mep: /\bcubeprop\s*\(/i.test(sinBloques), irc: opcionesIrc,
+      mep: /\bcubeprop\s*\(/i.test(sinBloques), irc: opcionesIrc, scan: opcionesScan,
     };
+  }
+
+  // Líneas que el lector sí entiende (o que genera esta misma aplicación)
+  const LINEA_CONOCIDA = /^(set\b|memory\b|E\s*,\s*wfn\s*=|geom_ts\s*=|oeprop\s*\(|cubeprop\s*\(|[\w.]+\.(set_geometry|update_geometry)\s*\()|\b(energy|optimize|opt|frequency|frequencies|freq|properties|prop|gradient|hessian)\s*\(/i;
+
+  const numeros = (s) => (String(s).match(/-?\d+(?:\.\d+)?(?:[eE]-?\d+)?/g) || []).map(Number);
+
+  // Valores de un bucle: lista literal, np.arange(a, b, paso), np.linspace(a, b, n) o una variable con eso
+  function valoresDe(expr, texto) {
+    let e = expr.trim();
+    const envoltura = /^(?:enumerate|list|sorted|reversed|tuple)\s*\((.*)\)$/.exec(e);
+    if (envoltura) e = envoltura[1].trim();
+    if (/^[A-Za-z_]\w*$/.test(e)) {
+      const asignacion = new RegExp(`^\\s*${e}\\s*=\\s*(.+)$`, 'm').exec(texto);
+      if (!asignacion) return null;
+      e = asignacion[1].trim();
+    }
+    let m;
+    if ((m = /^[[(]([^\])]*)[\])]$/.exec(e))) { const v = numeros(m[1]); return v.length ? v : null; }
+    if ((m = /arange\s*\(([^)]*)\)/.exec(e))) {
+      const [a, b, c = 1] = numeros(m[1]);
+      if (![a, b, c].every(Number.isFinite) || c === 0) return null;
+      const v = [];
+      for (let x = a; (c > 0 ? x < b - Math.abs(c) * 1e-9 : x > b + Math.abs(c) * 1e-9) && v.length < 1000; x += c) v.push(+x.toFixed(6));
+      return v.length ? v : null;
+    }
+    if ((m = /linspace\s*\(([^)]*)\)/.exec(e))) {
+      const [a, b, n] = numeros(m[1]);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || !(n >= 1)) return null;
+      return Array.from({ length: Math.round(n) }, (_, k) => +(n > 1 ? a + ((b - a) * k) / (n - 1) : a).toFixed(6));
+    }
+    return null;
+  }
+
+  function leerScan(textoResto, sinBloques, xyz, avisos) {
+    const r = /(fixed|frozen|ranged)_distance['"]?\s*[:=]?\s*(?:\(\s*)?[fFrRbBuU]?["']\s*(\d+)\s+(\d+)\s*([^"']*)["']/i.exec(textoResto);
+    if (!r) return null;
+    const tipo = r[1].toLowerCase();
+    const atomos = [parseInt(r[2], 10), parseInt(r[3], 10)];
+    const filas = String(xyz).trim().split('\n').map((l) => l.trim().split(/\s+/));
+    const nat = filas.length;
+    if (atomos[0] === atomos[1] || atomos.some((a) => a < 1 || a > nat)) {
+      throw new Error(`La restricción ${tipo}_distance usa átomos no válidos (la molécula tiene ${nat}): «${r[0]}»`);
+    }
+    const etq = `${filas[atomos[0] - 1][0]}${atomos[0]}–${filas[atomos[1] - 1][0]}${atomos[1]}`;
+    let valores = null;
+    for (const m of sinBloques.matchAll(/^\s*for\s+(?:\w+\s*,\s*)?\w+\s+in\s+(.+?)\s*:\s*$/gm)) {
+      const v = valoresDe(m[1], sinBloques);
+      if (v) { valores = v; break; }
+    }
+    if (!valores) {
+      const fijos = numeros(r[4]);
+      if (tipo === 'fixed' && fijos.length) valores = [fijos[0]];
+      else if (tipo === 'ranged' && fijos.length >= 2) valores = [(fijos[0] + fijos[1]) / 2];
+      else {
+        const [p, q] = atomos.map((a) => filas[a - 1].slice(1, 4).map(Number));
+        valores = [+Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]).toFixed(4)];
+      }
+      avisos.push(`No se encontró un bucle con los valores del scan: se hace una sola optimización con R(${etq}) = ${valores[0]} Å fija.`);
+    }
+    if (valores.length > 30) {
+      avisos.push(`El scan tenía ${valores.length} puntos: se usan los 30 primeros.`);
+      valores = valores.slice(0, 30);
+    }
+    if (valores.some((v) => v < 0.5 || v > 6)) throw new Error(`Las distancias del scan deben estar entre 0.5 y 6 Å (valores leídos: ${valores.join(', ')}).`);
+    avisos.push(`Scan relajado de R(${etq}) en ${valores.length} punto(s), de ${valores[0]} a ${valores[valores.length - 1]} Å: en cada punto se fija la distancia y se optimiza el resto. El .out incluirá la tabla «SCAN RELAJADO» (R, E y ΔE).`);
+    if (tipo === 'fixed') avisos.push('«fixed_distance» no existe en Psi4 1.11 (optking 0.5): el servidor coloca cada distancia y la congela con «frozen_distance», que da el mismo scan.');
+    avisos.push('El bucle y el resto del código Python del archivo (print_out, variables…) no se ejecutan tal cual: el servidor hace el scan equivalente y escribe la tabla en el .out.');
+    return { atomos, valores };
   }
 
   function leerXYZ(texto) {
@@ -246,7 +327,62 @@
 
   const NOMBRE_BASE_PSI4 = { 'sto-3g': 'sto-3g', '3-21g': '3-21g', '6-31g': '6-31g', '6-31g*': '6-31g*', '6-31g**': '6-31g**', '6-31+g*': '6-31+g*', '6-311g**': '6-311g**', 'cc-pvdz': 'cc-pvdz', 'aug-cc-pvdz': 'aug-cc-pvdz', 'def2-svp': 'def2-svp', 'def2-tzvp': 'def2-tzvp' };
 
-  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null }) {
+  // Código del scan relajado para Psi4 ≥ 1.7 (optking 0.5 ya no tiene fixed_distance): en cada
+  // punto se coloca la distancia moviendo el fragmento de j, se congela y se optimiza el resto.
+  function lineasScan(nombre, metodo, xyz, scan) {
+    const [i, j] = scan?.atomos || [1, 2];
+    const valores = scan?.valores || [];
+    const sim = String(xyz).trim().split(/\r?\n/).map((l) => l.trim().split(/\s+/)[0]);
+    const etq = `${sim[i - 1] || ''}${i}–${sim[j - 1] || ''}${j}`;
+    return [
+      `# Scan relajado de R(${etq}): en cada punto se fija la distancia y se optimiza el resto`,
+      'import numpy as np',
+      "RADIOS = {'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57, 'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'Br': 1.20, 'I': 1.39}",
+      '',
+      'def colocar_distancia(mol, i, j, valor):',
+      '    """Pone la distancia i-j (desde 0) en valor (Å) moviendo el fragmento unido a j."""',
+      '    x = mol.geometry().np * psi4.constants.bohr2angstroms',
+      '    s = [mol.symbol(k).capitalize() for k in range(mol.natom())]',
+      '    r = [RADIOS.get(e, 1.5) for e in s]',
+      '    frag, pila = {j}, [j]',
+      '    while pila:',
+      '        a = pila.pop()',
+      '        for b in range(len(s)):',
+      '            if b not in frag and {a, b} != {i, j} and np.linalg.norm(x[a] - x[b]) < 1.2 * (r[a] + r[b]):',
+      '                frag.add(b)',
+      '                pila.append(b)',
+      '    if i in frag:',
+      '        frag = {j}',
+      '    v = x[j] - x[i]',
+      '    d = np.linalg.norm(v)',
+      '    for k in frag:',
+      '        x[k] += (valor - d) * v / d',
+      '    mol.set_geometry(psi4.core.Matrix.from_array(x / psi4.constants.bohr2angstroms))',
+      '    mol.update_geometry()',
+      '',
+      `psi4.set_options({'frozen_distance': '${i} ${j}'})`,
+      'resultados, geometrias = [], []',
+      `for R in [${valores.map((v) => v.toFixed(4)).join(', ')}]:`,
+      `    colocar_distancia(${nombre}, ${i - 1}, ${j - 1}, R)`,
+      `    e = optimize('${metodo}')`,
+      '    resultados.append((R, e))',
+      `    geometrias.append(${nombre}.geometry().clone())`,
+      "psi4.set_options({'frozen_distance': ''})",
+      '',
+      `psi4.core.print_out("\\n\\n===== SCAN RELAJADO ${etq} =====\\n")`,
+      'e_ref = resultados[0][1]',
+      'for R, e in resultados:',
+      `    psi4.core.print_out(f"R(${etq}) = {R:6.3f} Å   E = {e:.10f} Eh   ΔE = {(e - e_ref) * psi4.constants.hartree2kcalmol:8.3f} kcal/mol\\n")`,
+      '',
+      '# Función de onda en el punto de menor energía',
+      'imin = min(range(len(resultados)), key=lambda k: resultados[k][1])',
+      `${nombre}.set_geometry(geometrias[imin])`,
+      `${nombre}.update_geometry()`,
+      `E, wfn = energy('${metodo}', return_wfn=True)`,
+    ];
+  }
+
+  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null }) {
     const nombre = String(titulo).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'molecula';
     const ref = Number(multiplicidad) === 1 ? 'rhf' : 'uhf';
     const llamadas = {
@@ -268,6 +404,7 @@
         '# Función de onda en el TS',
         `E, wfn = energy('${metodo}', return_wfn=True)`,
       ],
+      scan: tarea === 'scan' ? lineasScan(nombre, metodo, xyz, scan) : [],
     }[tarea];
     const lineasXYZ = String(xyz).trim().split(/\r?\n/).map((l) => {
       const [el, x, y, z] = l.trim().split(/\s+/);

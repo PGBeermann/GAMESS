@@ -168,6 +168,22 @@
           <input id="ircPaso" type="number" min="0.05" max="0.5" step="0.05" value="0.2">
         </label>
         <p class="nota solo-irc nota-irc" hidden>El IRC parte de un <b>estado de transición</b> (una sola frecuencia imaginaria) y sigue el camino de mínima energía hacia reactivos y productos. Calcule antes el TS con «Estado de transición (TS) + frecuencias» y use su botón «Calcular IRC desde este TS».</p>
+        <label class="solo-scan" hidden>Átomo i
+          <input id="scanI" type="number" min="1" step="1" value="1">
+        </label>
+        <label class="solo-scan" hidden>Átomo j (se mueve)
+          <input id="scanJ" type="number" min="1" step="1" value="2">
+        </label>
+        <label class="solo-scan" hidden>Desde (Å)
+          <input id="scanDesde" type="number" min="0.5" max="6" step="0.05">
+        </label>
+        <label class="solo-scan" hidden>Hasta (Å)
+          <input id="scanHasta" type="number" min="0.5" max="6" step="0.05">
+        </label>
+        <label class="solo-scan" hidden>Paso (Å)
+          <input id="scanPaso" type="number" min="0.01" max="1" step="0.01" value="0.1">
+        </label>
+        <p class="nota solo-scan nota-irc" id="scanInfo" hidden></p>
         <label class="chk largo"><input type="checkbox" id="mep" checked> Calcular potencial electrostático (MEP)</label>
         <div class="acciones fin">
           <span class="info" id="estimacion"></span>
