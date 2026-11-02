@@ -7,6 +7,10 @@ el potencial electrostático y las vibraciones.
 ## Qué hace
 
 1. **Dibujar** la molécula en JSME (o escribir un SMILES, o elegir uno de 20 ejemplos).
+   También se puede **abrir un archivo de entrada de Psi4 (.in)** o un **.xyz** (botón o arrastrando
+   el archivo): se leen la molécula (cartesianas o matriz Z, Å o bohr), la carga, la multiplicidad,
+   el método, la base y el tipo de cálculo. El .in **no se ejecuta** en el servidor (sería ejecutar
+   Python arbitrario): se interpreta y se valida como cualquier otro cálculo.
 2. **Generar la geometría 3D**: RDKit añade los hidrógenos, genera coordenadas (ETKDG) y las
    preoptimiza con MMFF94. Sugiere la carga y la multiplicidad.
 3. **Configurar el cálculo**:
@@ -25,7 +29,8 @@ el potencial electrostático y las vibraciones.
    - Animación de cada modo normal en el visor 3D (amplitud, velocidad, flechas, XYZ animado)
    - Termoquímica (ZPVE, H, G)
    - Trayectoria de la optimización (gráfico de energía + animación paso a paso)
-   - Descarga de la salida completa de Psi4 y de la geometría final (.xyz), imagen PNG del visor
+   - **Salida completa de Psi4 como .out**, la **entrada .in** equivalente (para ejecutarla con
+     `psi4 archivo.in archivo.out` en otra computadora), la geometría final (.xyz) e imagen PNG del visor
 
 Los cálculos se ponen en una **cola** en el servidor; cada navegador guarda la lista de «Mis cálculos».
 
@@ -37,6 +42,7 @@ python/geometria.py      JSME (molfile/SMILES) → geometría 3D con RDKit
 python/calculo_psi4.py   Ejecuta Psi4 y escribe resultado.json + archivos .cube
 python/version.py        Informa versiones de Psi4 y RDKit
 public/                  Interfaz (index.html, app.js, estilos.css)
+public/entrada.js        Lectura y generación de archivos .in de Psi4 (navegador y servidor)
 public/asignaciones.js   Asignación automática de modos (PED aproximada con coordenadas internas)
 environment.yml          Psi4 1.11 + RDKit + Python 3.12 + Node.js 22 (conda-forge)
 Dockerfile               Imagen para Dokploy
@@ -92,11 +98,11 @@ Luego abra http://localhost:3000.
 |---|---|---|
 | GET | `/salud` | Estado del servidor y versión de Psi4 |
 | GET | `/api/opciones` | Métodos, bases, tareas y límites |
-| POST | `/api/geometria` | `{molfile, smiles}` → geometría 3D (RDKit) |
+| POST | `/api/geometria` | `{molfile, smiles}` → geometría 3D (RDKit); `{xyz, carga, multiplicidad}` → enlaces y dibujo 2D conservando las coordenadas |
 | POST | `/api/calculos` | `{xyz, metodo, base, tarea, carga, multiplicidad, mep, titulo}` → crea un cálculo |
 | GET | `/api/calculos/:id` | Estado, salida en vivo y resultado |
 | DELETE | `/api/calculos/:id` | Cancela un cálculo (sólo la misma IP) |
-| GET | `/api/calculos/:id/archivo/:nombre` | `salida.dat`, `geometria.xyz`, `homo.cube`, `lumo.cube`, `densidad.cube`, `mep.cube` |
+| GET | `/api/calculos/:id/archivo/:nombre` | `salida.dat` (se guarda como .out), `entrada.in`, `geometria.xyz`, `homo.cube`, `lumo.cube`, `densidad.cube`, `mep.cube` |
 
 Si `CLAVE_ACCESO` está definida, las rutas `/api/*` (salvo `/api/opciones`) exigen la cabecera `x-clave-acceso`.
 

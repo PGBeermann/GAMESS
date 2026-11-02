@@ -69,7 +69,8 @@ const Z = Object.fromEntries(
   ('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr')
     .split(' ').map((s, i) => [s, i + 1]).concat([['I', 53]]),
 );
-const ARCHIVOS_PERMITIDOS = new Set(['salida.dat', 'geometria.xyz', 'homo.cube', 'lumo.cube', 'densidad.cube', 'mep.cube']);
+const { generarEntradaPsi4 } = require('./public/entrada.js');
+const ARCHIVOS_PERMITIDOS = new Set(['salida.dat', 'entrada.in', 'geometria.xyz', 'homo.cube', 'lumo.cube', 'densidad.cube', 'mep.cube']);
 
 // ---------- Estado de los trabajos ----------
 /** @type {Map<string, any>} */
@@ -293,7 +294,23 @@ app.use('/api', (req, res, next) => {
 });
 
 app.post('/api/geometria', async (req, res) => {
-  const { molfile, smiles } = req.body || {};
+  const { molfile, smiles, xyz } = req.body || {};
+  // Geometría leída de un archivo .in/.xyz: se valida y se conservan las coordenadas
+  if (xyz) {
+    try {
+      const g = validarXYZ(xyz);
+      const carga = Number(req.body.carga) || 0;
+      const multiplicidad = Number(req.body.multiplicidad) || 1;
+      if (!Number.isInteger(carga) || Math.abs(carga) > 4 || !Number.isInteger(multiplicidad) || multiplicidad < 1 || multiplicidad > 5) {
+        return res.status(400).json({ error: 'Carga o multiplicidad no válidas en el archivo.' });
+      }
+      const r = await correrPython(SCRIPT_GEOM, { xyz: g.xyz, carga, multiplicidad }, 60e3);
+      if (!r.ok) return res.status(422).json({ error: r.error });
+      return res.json(r);
+    } catch (e) {
+      return res.status(400).json({ error: e.message });
+    }
+  }
   if (!molfile && !smiles) return res.status(400).json({ error: 'Envíe un molfile o un SMILES.' });
   if (String(molfile || '').length > 200000 || String(smiles || '').length > 2000) {
     return res.status(400).json({ error: 'Estructura demasiado grande.' });
@@ -340,6 +357,11 @@ app.post('/api/calculos', async (req, res) => {
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.json'), JSON.stringify({
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
       mep: b.mep !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo,
+    }));
+    // Entrada .in equivalente, para descargarla y ejecutarla con Psi4 fuera del servidor
+    await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), generarEntradaPsi4({
+      titulo, xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
+      memoria: CONFIG.memoria, mep: b.mep !== false,
     }));
     trabajos.set(id, t);
     await guardarMeta(t);

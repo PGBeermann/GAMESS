@@ -106,7 +106,10 @@ window.jsmeOnLoad = function jsmeOnLoad() {
   const caja = $('#jsme');
   caja.innerHTML = '';
   estado.jsme = new JSApplet.JSME('jsme', `${caja.clientWidth}px`, `${caja.clientHeight}px`, { options: 'polarnitro' });
-  estado.jsme.setCallBack('AfterStructureModified', () => { estado.modificada = true; });
+  estado.jsme.setCallBack('AfterStructureModified', () => {
+    if (Date.now() - (estado.cargaArchivo || 0) < 2000) return; // dibujo puesto desde un archivo
+    estado.modificada = true;
+  });
   leerEnJSME('CCO');
   $('#titulo').value = 'Etanol';
   generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; });
@@ -297,6 +300,7 @@ async function generar3D() {
     estado.modificada = false;
     estado.resultado = null;
     $('#barraVib').hidden = true;
+    $('#avisosArchivo').hidden = true;
     $('#ctrlCargas').hidden = true;
     $('#colorCargas').checked = false;
     $('#carga').value = g.carga;
@@ -310,6 +314,109 @@ async function generar3D() {
     return g;
   } finally {
     btn.disabled = false;
+  }
+}
+
+// ---------- Archivos de entrada (.in de Psi4 o .xyz) ----------
+const nombreSeguro = (t) => String(t || 'molecula').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^\w.-]+/g, '_').replace(/^_+|_+$/g, '') || 'molecula';
+
+function mostrarAvisos(lista, error = false) {
+  const caja = $('#avisosArchivo');
+  if (!lista || !lista.length) { caja.hidden = true; return; }
+  caja.className = `avisos${error ? ' error' : ''}`;
+  caja.innerHTML = lista.length === 1 ? esc(lista[0]) : `<ul>${lista.map((a) => `<li>${esc(a)}</li>`).join('')}</ul>`;
+  caja.hidden = false;
+}
+
+async function abrirArchivo(archivo) {
+  if (!archivo) return;
+  try {
+    if (archivo.size > 300000) throw new Error('El archivo es demasiado grande (máx. 300 kB).');
+    const texto = await archivo.text();
+    const esXYZ = /\.xyz$/i.test(archivo.name);
+    const datos = esXYZ ? { ...leerXYZ(texto), carga: 0, multiplicidad: 1 } : leerEntradaPsi4(texto);
+    $('#infoMolecula').textContent = `Leyendo ${archivo.name}…`;
+    const g = await api('/api/geometria', {
+      method: 'POST', body: JSON.stringify({ xyz: datos.xyz, carga: datos.carga, multiplicidad: datos.multiplicidad }),
+    });
+    estado.geom = { ...g, archivo: archivo.name };
+    estado.modificada = false;
+    estado.resultado = null;
+    $('#barraVib').hidden = true;
+    $('#ctrlCargas').hidden = true;
+    $('#colorCargas').checked = false;
+    // Formulario con lo que dice el archivo
+    $('#titulo').value = datos.titulo || archivo.name.replace(/\.[^.]+$/, '');
+    $('#carga').value = datos.carga;
+    $('#multiplicidad').value = datos.multiplicidad;
+    if (!esXYZ) { $('#metodo').value = datos.metodo; $('#base').value = datos.base; $('#tarea').value = datos.tarea; }
+    $('#smiles').value = g.smiles || '';
+    // Dibujo 2D en JSME (sin marcar la estructura como modificada)
+    if (g.mol2d && estado.jsme) {
+      estado.cargaArchivo = Date.now();
+      try { estado.jsme.readMolFile(g.mol2d); } catch { /* el dibujo es opcional */ }
+    }
+    prepararSuperficies([]);
+    cargarModelo(g.molblock || datos.xyz, g.molblock ? 'sdf' : 'xyz');
+    $('#etiquetaModelo').textContent = `${g.formula} · geometría del archivo ${archivo.name}`;
+    const nivel = esXYZ ? 'elija método, base y tipo de cálculo' : `${nombreDe('metodos', datos.metodo)}/${nombreDe('bases', datos.base)} · ${nombreDe('tareas', datos.tarea)}`;
+    $('#infoMolecula').innerHTML = `<strong>${esc(archivo.name)}</strong>: ${esc(g.formula)} · ${g.natomos} átomos · ${g.electrones} electrones · carga ${datos.carga} · multiplicidad ${datos.multiplicidad} · ${esc(nivel)}`;
+    const avisos = [...(datos.avisos || [])];
+    if (g.aviso) avisos.push(g.aviso);
+    if (esXYZ) avisos.push('Un .xyz no indica carga ni multiplicidad: se suponen 0 y 1. Corríjalas en el formulario si hace falta.');
+    avisos.push('Se usarán las coordenadas del archivo tal cual. Si edita el dibujo, se generará una geometría nueva.');
+    mostrarAvisos(avisos);
+    actualizarEstimacion();
+  } catch (e) {
+    mostrarAvisos([`No se pudo leer ${archivo.name}: ${e.message}`], true);
+    $('#infoMolecula').textContent = 'El archivo no se pudo usar.';
+  } finally {
+    $('#archivoEntrada').value = '';
+  }
+}
+
+async function guardarEntradaActual() {
+  try {
+    if (estado.modificada || !estado.geom) await generar3D();
+    const g = estado.geom;
+    const titulo = $('#titulo').value.trim() || g.formula || 'molecula';
+    const texto = generarEntradaPsi4({
+      titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
+      metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
+      memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked,
+    });
+    descargar(texto, `${nombreSeguro(titulo)}.in`);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// Descarga archivos de un cálculo: la salida de Psi4 se guarda como .out
+async function guardarArchivoTrabajo(cual) {
+  const t = estado.infoTrabajo; const r = estado.resultado;
+  if (!t) return;
+  const nombre = nombreSeguro(t.titulo);
+  try {
+    if (cual === 'out') {
+      descargar(await api(`/api/calculos/${t.id}/archivo/salida.dat`), `${nombre}.out`);
+    } else if (cual === 'in') {
+      let texto;
+      try {
+        texto = await api(`/api/calculos/${t.id}/archivo/entrada.in`);
+      } catch (e) {
+        if (e.status !== 404) throw e;
+        // Cálculos anteriores a esta función: se arma con la geometría final
+        texto = `# Nota: cálculo anterior a la exportación de entradas; se usa la geometría final.\n${generarEntradaPsi4({
+          titulo: t.titulo, xyz: r.geometria_xyz, carga: r.carga, multiplicidad: r.multiplicidad,
+          metodo: r.metodo, base: r.base, tarea: r.tarea, memoria: estado.opciones?.memoria || '2 GB', mep: (r.cubos || []).includes('mep'),
+        })}`;
+      }
+      descargar(texto, `${nombre}.in`);
+    } else if (cual === 'xyz') {
+      descargar(await api(`/api/calculos/${t.id}/archivo/geometria.xyz`), `${nombre}_final.xyz`);
+    }
+  } catch (e) {
+    alert(e.message);
   }
 }
 
@@ -465,7 +572,10 @@ function panelResumen(t, r) {
   const o = r.orbitales || {};
   const f = r.frecuencias;
   const th = f?.termoquimica_hartree;
-  let html = '<div class="cifras">';
+  let html = `<div class="grupo-btn barra-guardar">
+    <button class="btn sec chico" type="button" data-guardar="out">Guardar salida (.out)</button>
+    <button class="btn sec chico" type="button" data-guardar="in">Guardar entrada (.in)</button>
+  </div><div class="cifras">`;
   html += cifra('Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
   if (d) html += cifra('Momento dipolar', `${fx(d.total, 3)} D`, `x ${fx(d.x, 3)} · y ${fx(d.y, 3)} · z ${fx(d.z, 3)}`);
   if (o.homo_ev != null) html += cifra('HOMO / LUMO', `${fx(o.homo_ev, 3)} / ${fx(o.lumo_ev, 3)} eV`, o.gap_ev != null ? `Brecha HOMO–LUMO: ${fx(o.gap_ev, 3)} eV` : '');
@@ -919,21 +1029,17 @@ function panelOptimizacion(r) {
 
 function panelArchivos(t, r) {
   const panel = $('[data-panel="archivos"]');
-  const base = (t.titulo || 'molecula').replace(/\s+/g, '_');
   panel.innerHTML = `<div class="grupo-btn">
-      <button class="btn sec" type="button" data-archivo="salida.dat">Salida de Psi4 (salida.dat)</button>
-      <button class="btn sec" type="button" data-archivo="geometria.xyz">Geometría final (.xyz)</button>
+      <button class="btn sec" type="button" data-guardar="out">Salida de Psi4 (.out)</button>
+      <button class="btn sec" type="button" data-guardar="in">Entrada de Psi4 (.in)</button>
+      <button class="btn sec" type="button" data-guardar="xyz">Geometría final (.xyz)</button>
       <button class="btn sec" type="button" id="verSalida">Mostrar salida completa</button>
     </div>
-    <p class="nota">Identificador del cálculo: <code>${esc(t.id)}</code>. Los resultados se guardan en el servidor durante un tiempo limitado.</p>
+    <p class="nota">El archivo <b>.out</b> es la salida completa de Psi4 (energías, iteraciones, geometrías, frecuencias, termoquímica). El <b>.in</b> reproduce este cálculo: puede ejecutarlo en su computadora con <code>psi4 ${esc(nombreSeguro(t.titulo))}.in</code> o volver a abrirlo aquí. Identificador del cálculo: <code>${esc(t.id)}</code>. Los resultados se guardan en el servidor durante un tiempo limitado.</p>
     <pre class="salida-completa" id="salidaCompleta" hidden></pre>`;
   panel.onclick = async (ev) => {
-    const b = ev.target.closest('[data-archivo]');
     try {
-      if (b) {
-        const texto = await api(`/api/calculos/${t.id}/archivo/${b.dataset.archivo}`);
-        descargar(texto, `${base}_${b.dataset.archivo}`);
-      } else if (ev.target.id === 'verSalida') {
+      if (ev.target.id === 'verSalida') {
         const pre = $('#salidaCompleta');
         if (pre.hidden) { pre.textContent = await api(`/api/calculos/${t.id}/archivo/salida.dat`); pre.hidden = false; ev.target.textContent = 'Ocultar salida'; } else { pre.hidden = true; ev.target.textContent = 'Mostrar salida completa'; }
       }
@@ -986,6 +1092,17 @@ function eventos() {
   $('#smiles').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#leerSmiles').click(); } });
   $('#generar3d').addEventListener('click', () => generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; }));
   $('#formCalculo').addEventListener('submit', calcular);
+  $('#guardarEntrada').addEventListener('click', guardarEntradaActual);
+  $('#abrirArchivo').addEventListener('click', () => $('#archivoEntrada').click());
+  $('#archivoEntrada').addEventListener('change', (e) => abrirArchivo(e.target.files[0]));
+  const tarjeta = $('#tarjetaMolecula');
+  tarjeta.addEventListener('dragover', (e) => { e.preventDefault(); tarjeta.classList.add('arrastrando'); });
+  tarjeta.addEventListener('dragleave', (e) => { if (!tarjeta.contains(e.relatedTarget)) tarjeta.classList.remove('arrastrando'); });
+  tarjeta.addEventListener('drop', (e) => {
+    e.preventDefault();
+    tarjeta.classList.remove('arrastrando');
+    if (e.dataTransfer.files.length) abrirArchivo(e.dataTransfer.files[0]);
+  });
   ['#metodo', '#base', '#tarea'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
 
   $('#estilo').addEventListener('change', () => {
@@ -1022,6 +1139,8 @@ function eventos() {
     if (b && !b.disabled) abrirPestana(b.dataset.pestana);
   });
   $('#resultados').addEventListener('click', (e) => {
+    const guardar = e.target.closest('[data-guardar]');
+    if (guardar) { guardarArchivoTrabajo(guardar.dataset.guardar); return; }
     const b = e.target.closest('[data-ver-sup]');
     if (b) { $('#superficie').value = b.dataset.verSup; ajustarDeslizador(); mostrarSuperficie(); $('#visor').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     if (e.target.id === 'verCargas') {

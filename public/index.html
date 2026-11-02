@@ -32,7 +32,7 @@
   </div>
 
   <main class="contenido">
-    <section class="tarjeta" aria-labelledby="t1">
+    <section class="tarjeta" aria-labelledby="t1" id="tarjetaMolecula">
       <div class="tarjeta-cab">
         <h2 id="t1"><span class="paso">1</span> Dibuje la molécula</h2>
         <select id="ejemplos" aria-label="Cargar un ejemplo">
@@ -45,6 +45,12 @@
         <input id="smiles" type="text" spellcheck="false" placeholder="o escriba un SMILES, p. ej. CC(=O)O">
         <button class="btn sec" id="leerSmiles" type="button">Leer SMILES</button>
       </div>
+      <div class="fila-archivo">
+        <input type="file" id="archivoEntrada" accept=".in,.inp,.dat,.psi4,.txt,.xyz" hidden>
+        <button class="btn sec" id="abrirArchivo" type="button">Abrir archivo de entrada (.in / .xyz)</button>
+        <span class="info">o arrástrelo sobre esta tarjeta</span>
+      </div>
+      <div class="avisos" id="avisosArchivo" hidden></div>
       <div class="acciones">
         <button class="btn" id="generar3d" type="button">Generar geometría 3D</button>
         <span class="info" id="infoMolecula">Dibuje una estructura y pulse «Generar geometría 3D».</span>
@@ -129,6 +135,7 @@
         <label class="chk largo"><input type="checkbox" id="mep" checked> Calcular potencial electrostático (MEP)</label>
         <div class="acciones fin">
           <span class="info" id="estimacion"></span>
+          <button class="btn sec" id="guardarEntrada" type="button" title="Descarga el archivo .in de Psi4 con esta molécula y estas opciones">Guardar entrada (.in)</button>
           <button class="btn grande" id="calcular" type="submit">Calcular con Psi4</button>
         </div>
       </form>
@@ -187,6 +194,7 @@
   </footer>
 
   <script src="/vendor/3dmol/3Dmol-min.js"></script>
+  <script src="entrada.js"></script>
   <script src="asignaciones.js"></script>
   <script src="app.js"></script>
   <script src="/vendor/jsme/jsme.nocache.js"></script>

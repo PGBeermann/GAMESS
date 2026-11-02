@@ -33,11 +33,65 @@ def leer_molecula(datos):
     return mol
 
 
+def desde_xyz(datos):
+    """Geometría leída de un archivo (.in o .xyz): se conservan las coordenadas tal cual.
+
+    RDKit sólo deduce los enlaces (para el visor 3D y el SMILES) y genera un dibujo 2D
+    para el editor JSME. Si no logra asignar órdenes de enlace, usa sólo la conectividad.
+    """
+    from rdkit.Chem import rdDetermineBonds
+
+    xyz = datos["xyz"].strip()
+    carga = int(datos.get("carga") or 0)
+    lineas = xyz.splitlines()
+    mol = Chem.MolFromXYZBlock(f"{len(lineas)}\narchivo\n{xyz}\n")
+    if mol is None:
+        responder({"ok": False, "error": "No se pudieron leer las coordenadas del archivo."}, 1)
+    aviso = ""
+    try:
+        rdDetermineBonds.DetermineBonds(mol, charge=carga)
+    except Exception:
+        try:
+            rdDetermineBonds.DetermineConnectivity(mol)
+            aviso = "No se pudieron deducir los órdenes de enlace: el dibujo 2D muestra sólo la conectividad."
+        except Exception:
+            aviso = "No se pudo deducir la conectividad; el editor 2D no se actualiza."
+    electrones = sum(a.GetAtomicNum() for a in mol.GetAtoms()) - carga
+    smiles, mol2d, molblock = "", "", ""
+    try:
+        molblock = Chem.MolToMolBlock(mol)
+        sin_h = Chem.RemoveHs(mol, sanitize=False)
+        try:
+            Chem.SanitizeMol(sin_h)
+            smiles = Chem.MolToSmiles(sin_h)
+        except Exception:
+            pass
+        copia = Chem.Mol(sin_h)
+        AllChem.Compute2DCoords(copia)
+        mol2d = Chem.MolToMolBlock(copia)
+    except Exception:
+        pass
+    try:
+        formula = rdMolDescriptors.CalcMolFormula(mol)
+        masa = round(rdMolDescriptors.CalcExactMolWt(mol), 4)
+    except Exception:
+        formula, masa = "", None
+    responder({
+        "ok": True, "xyz": xyz, "molblock": molblock, "mol2d": mol2d, "smiles": smiles,
+        "formula": formula, "masa": masa, "natomos": mol.GetNumAtoms(), "electrones": electrones,
+        "carga": carga, "multiplicidad": int(datos.get("multiplicidad") or 1),
+        "campo_fuerza": "archivo", "aviso": aviso,
+    })
+
+
 def main():
     try:
         datos = json.load(sys.stdin)
     except Exception:
         responder({"ok": False, "error": "Entrada no válida."}, 1)
+
+    if datos.get("xyz"):
+        desde_xyz(datos)
 
     max_atomos = int(datos.get("max_atomos") or 40)
     mol = leer_molecula(datos)
