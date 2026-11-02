@@ -76,14 +76,52 @@ def funcion_scf(wfn):
     return wfn
 
 
+def emitir_paso(paso, mol, gradiente):
+    """Envía al servidor la geometría recién evaluada (línea @@GEOM con JSON) para el visor en vivo."""
+    simbolos, coords = geometria_actual(mol)
+    g = a_numpy(gradiente).reshape(-1)
+    datos = {
+        "paso": paso,
+        "energia": variable_global("CURRENT ENERGY"),
+        "grad_rms": float(np.sqrt(np.mean(g ** 2))) if g.size else None,
+        "grad_max": float(np.abs(g).max()) if g.size else None,
+        "xyz": texto_xyz(simbolos, coords),
+    }
+    print("@@GEOM " + json.dumps(datos), flush=True)
+
+
 def optimizar(metodo, mol):
-    """Optimiza la geometría y, si Psi4 lo permite, devuelve también la trayectoria."""
+    """Optimiza la geometría y, si Psi4 lo permite, devuelve también la trayectoria.
+
+    Para mostrar la geometría en vivo se envuelve psi4.driver.driver.gradient, que el ciclo
+    de optimización de Psi4 llama una vez por paso. Si la envoltura no es posible, la
+    optimización funciona igual, sólo que sin actualizaciones intermedias.
+    """
+    modulo = getattr(getattr(psi4, "driver", None), "driver", None)
+    original = getattr(modulo, "gradient", None)
+    pasos = [0]
+
+    def gradiente_con_aviso(name, **kwargs):
+        salida = original(name, **kwargs)
+        try:
+            pasos[0] += 1
+            emitir_paso(pasos[0], kwargs.get("molecule") or mol, salida[0] if isinstance(salida, tuple) else salida)
+        except Exception:  # noqa: BLE001  (el aviso nunca debe interrumpir el cálculo)
+            pass
+        return salida
+
+    if callable(original):
+        modulo.gradient = gradiente_con_aviso
     historia = None
     try:
-        salida = psi4.optimize(metodo, molecule=mol, return_wfn=True, return_history=True)
-        energia, historia = salida[0], salida[-1]
-    except TypeError:
-        energia = psi4.optimize(metodo, molecule=mol)
+        try:
+            salida = psi4.optimize(metodo, molecule=mol, return_wfn=True, return_history=True)
+            energia, historia = salida[0], salida[-1]
+        except TypeError:
+            energia = psi4.optimize(metodo, molecule=mol)
+    finally:
+        if callable(original):
+            modulo.gradient = original
     trayectoria = []
     if isinstance(historia, dict) and historia.get("coordinates"):
         simbolos = [mol.symbol(i).capitalize() for i in range(mol.natom())]

@@ -22,6 +22,7 @@ const estado = {
   opciones: null, geom: null, modificada: true, jsme: null, visor: null,
   trabajo: null, resultado: null, token: 0, reloj: null, inicio: null,
   modelo: null, cubos: new Map(), reproductor: null, girando: false, modoActivo: null, flechas: [],
+  vivo: null, vivoAnim: 0, molblocks: new Map(), // geometría en vivo durante la optimización
 };
 
 // ---------- Utilidades ----------
@@ -182,6 +183,7 @@ function quitarFlechas() {
 }
 
 function detenerAnimacion() {
+  cancelAnimationFrame(estado.vivoAnim);
   estado.visor.stopAnimate();
   clearInterval(estado.reproductor);
   estado.reproductor = null;
@@ -610,6 +612,7 @@ async function lanzarCalculo() {
     mep: $('#mep').checked,
   };
   const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
+  if (g.molblock) estado.molblocks.set(t.id, g.molblock);
   guardarEnHistorial(t);
   seguir(t.id);
   return t;
@@ -645,6 +648,8 @@ function seguir(id) {
   const token = ++estado.token;
   estado.trabajo = id;
   estado.resultado = null;
+  estado.vivo = null;
+  $('#vivoOpt').hidden = true;
   $('#barraVib').hidden = true;
   const sec = $('#seccionResultados');
   sec.hidden = false;
@@ -681,6 +686,7 @@ function seguir(id) {
         pre.textContent = t.registro;
         if (abajo) pre.scrollTop = pre.scrollHeight;
       }
+      if (t.vivo) mostrarVivo(t, id);
       cronometro();
       setTimeout(ciclo, 2000);
     } else {
@@ -692,8 +698,103 @@ function seguir(id) {
   ciclo();
 }
 
+// ---------- Geometría en vivo durante la optimización ----------
+// Psi4 informa la geometría de cada paso; el visor pasa suavemente de un paso al siguiente.
+function leerCoordenadas(xyz) {
+  return String(xyz || '').trim().split(/\r?\n/).map((l) => {
+    const [e, x, y, z] = l.trim().split(/\s+/);
+    return { e, p: [+x, +y, +z] };
+  }).filter((a) => a.e && a.p.every(Number.isFinite));
+}
+
+// Molfile del cálculo con coordenadas nuevas: conserva los enlaces dobles y triples del dibujo
+function molblockCon(molblock, coords) {
+  if (!molblock || !coords.length) return null;
+  const l = molblock.replace(/\r\n/g, '\n').split('\n');
+  if (!/V2000/.test(l[3] || '') || parseInt(l[3].slice(0, 3), 10) !== coords.length) return null;
+  for (let i = 0; i < coords.length; i++) {
+    const a = l[4 + i] || '';
+    if (a.slice(31, 34).trim().toLowerCase() !== coords[i].e.toLowerCase()) return null;
+    l[4 + i] = coords[i].p.map((v) => v.toFixed(4).padStart(10)).join('') + a.slice(30);
+  }
+  return l.join('\n');
+}
+
+function dibujarCoordenadas(coords, molblock) {
+  const v = estado.visor;
+  const sdf = molblockCon(molblock, coords);
+  v.removeAllModels();
+  if (sdf) v.addModel(sdf, 'sdf');
+  else v.addModel(xyzCompleto(coords.map((c) => `${c.e} ${c.p.join(' ')}`).join('\n')), 'xyz');
+  aplicarEstilo();
+}
+
+function graficoVivo(energias) {
+  const E = energias.filter(Number.isFinite);
+  const svg = $('#vivoGrafico');
+  if (E.length < 2) { svg.innerHTML = ''; return; }
+  const W = 240; const H = 70; const m = { i: 30, d: 6, s: 6, b: 16 };
+  const min = Math.min(...E); const max = Math.max(...E); const rango = max - min || 1e-9;
+  const px = (i) => m.i + (i / (E.length - 1)) * (W - m.i - m.d);
+  const py = (e) => m.s + (1 - (e - min) / rango) * (H - m.s - m.b);
+  const puntos = E.map((e, i) => `${px(i).toFixed(1)},${py(e).toFixed(1)}`).join(' ');
+  const dif = ((max - min) * HARTREE_KCAL).toFixed(2);
+  svg.innerHTML = `<line class="eje" x1="${m.i}" y1="${H - m.b}" x2="${W - m.d}" y2="${H - m.b}"/>
+    <line class="eje" x1="${m.i}" y1="${m.s}" x2="${m.i}" y2="${H - m.b}"/>
+    <polyline class="linea" points="${puntos}"/>
+    <circle cx="${px(E.length - 1)}" cy="${py(E[E.length - 1])}" r="3"/>
+    <text x="${m.i - 3}" y="${m.s + 7}" text-anchor="end">+${dif}</text>
+    <text x="${m.i - 3}" y="${H - m.b}" text-anchor="end">0</text>
+    <text x="${(m.i + W) / 2}" y="${H - 3}" text-anchor="middle">paso de optimización (E en kcal/mol)</text>`;
+}
+
+function mostrarVivo(t, id) {
+  const v = t.vivo;
+  if (!v || !v.xyz || v.paso === estado.vivo?.paso) return;
+  const nuevas = leerCoordenadas(v.xyz);
+  if (!nuevas.length) return;
+  const molblock = estado.molblocks.get(id) || null;
+  if (!estado.vivo) {
+    // Primer paso: se quitan superficies y vibraciones del cálculo anterior
+    detenerAnimacion();
+    prepararSuperficies([]);
+    $('#barraVib').hidden = true;
+    $('#ctrlCargas').hidden = true;
+  }
+  const actuales = estado.vivo?.coords
+    || (estado.visor.getModel()?.selectedAtoms({}) || []).map((a) => ({ e: a.elem, p: [a.x, a.y, a.z] }));
+  const interpolar = actuales.length === nuevas.length
+    && actuales.every((a, i) => String(a.e).toLowerCase() === nuevas[i].e.toLowerCase());
+  estado.vivo = { paso: v.paso, coords: nuevas };
+  cancelAnimationFrame(estado.vivoAnim);
+  const reducido = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const t0 = performance.now(); const dur = 700;
+  const cuadro = (ahoraMs) => {
+    const f = interpolar && !reducido ? Math.min(1, Math.max(0, (ahoraMs - t0) / dur)) : 1;
+    const k = f * f * (3 - 2 * f); // suavizado
+    dibujarCoordenadas(nuevas.map((c, i) => ({ e: c.e, p: interpolar ? c.p.map((x, j) => actuales[i].p[j] + (x - actuales[i].p[j]) * k) : c.p })), molblock);
+    if (f < 1) estado.vivoAnim = requestAnimationFrame(cuadro);
+  };
+  estado.vivoAnim = requestAnimationFrame(cuadro);
+
+  const E = v.energias || [];
+  const previa = E.length > 1 ? E[E.length - 2] : null;
+  const dE = Number.isFinite(previa) && Number.isFinite(v.energia) ? (v.energia - previa) * HARTREE_KCAL : null;
+  $('#vivoTexto').innerHTML = [
+    `Paso ${v.paso}`,
+    Number.isFinite(v.energia) ? `E = ${v.energia.toFixed(6)} Eh` : '',
+    dE != null ? `ΔE = ${dE >= 0 ? '+' : ''}${dE.toFixed(3)} kcal/mol` : '',
+    Number.isFinite(v.grad_max) ? `gradiente máx. = ${v.grad_max.toExponential(2)} Eh/bohr` : '',
+  ].filter(Boolean).join(' · ');
+  graficoVivo(E);
+  $('#vivoOpt').hidden = false;
+  $('#etiquetaModelo').textContent = `${t.formula || ''} · optimizando: paso ${v.paso}`;
+}
+
 function finSeguimiento() {
   clearInterval(estado.reloj);
+  cancelAnimationFrame(estado.vivoAnim);
+  $('#vivoOpt').hidden = true;
   $('#progreso').hidden = true;
   $('#cancelar').hidden = true;
 }
@@ -724,7 +825,8 @@ function mostrarResultado(t) {
   pildora(t);
 
   prepararSuperficies(r.cubos || []);
-  cargarModelo(r.geometria_xyz, 'xyz');
+  const sdf = molblockCon(estado.molblocks.get(t.id), leerCoordenadas(r.geometria_xyz));
+  if (sdf) cargarModelo(sdf, 'sdf'); else cargarModelo(r.geometria_xyz, 'xyz');
   etiquetaModeloResultado();
   $('#ctrlCargas').hidden = !r.cargas_mulliken;
 

@@ -84,7 +84,7 @@ const carpetaDe = (id) => path.join(DIR_TRABAJOS, id);
 const ID_VALIDO = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 async function guardarMeta(t) {
-  const { proceso, ...meta } = t;
+  const { proceso, vivo, ...meta } = t; // la geometría en vivo sólo vive en memoria
   const tmp = path.join(carpetaDe(t.id), 'trabajo.json.tmp');
   await fsp.writeFile(tmp, JSON.stringify(meta));
   await fsp.rename(tmp, path.join(carpetaDe(t.id), 'trabajo.json'));
@@ -154,6 +154,14 @@ function ejecutar(t) {
       if (l.startsWith('@@ETAPA ')) {
         t.etapa = l.slice(8).trim();
         guardarMeta(t).catch(() => {});
+      } else if (l.startsWith('@@GEOM ')) {
+        // Geometría de cada paso de la optimización, para actualizar el visor 3D en vivo
+        try {
+          const g = JSON.parse(l.slice(7));
+          if (!t.vivo) t.vivo = { energias: [] };
+          Object.assign(t.vivo, { paso: g.paso, energia: g.energia, grad_rms: g.grad_rms, grad_max: g.grad_max, xyz: String(g.xyz || '') });
+          if (t.vivo.energias.length < 500) t.vivo.energias.push(g.energia);
+        } catch { /* línea incompleta o no válida */ }
       }
     }
   });
@@ -183,6 +191,7 @@ function ejecutar(t) {
         : (res && res.error) || `Psi4 terminó con código ${codigo}. ${stderr.trim().split('\n').slice(-3).join(' ')}`.trim();
     }
     t.etapa = null;
+    delete t.vivo;
     await fsp.rm(scratch, { recursive: true, force: true }).catch(() => {});
     await guardarMeta(t).catch(() => {});
     enEjecucion--;
@@ -385,6 +394,7 @@ app.get('/api/calculos/:id', async (req, res) => {
   if (!t) return;
   const r = resumen(t);
   if (t.estado === 'ejecutando' || t.estado === 'error') r.registro = await colaSalida(t.id);
+  if (t.estado === 'ejecutando' && t.vivo) r.vivo = t.vivo;
   if (t.estado === 'terminado' || t.estado === 'error') {
     try { r.resultado = JSON.parse(await fsp.readFile(path.join(carpetaDe(t.id), 'resultado.json'), 'utf8')); } catch { /* nada */ }
     if (r.resultado) delete r.resultado.traza;

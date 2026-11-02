@@ -33,6 +33,10 @@ el potencial electrostático y las vibraciones.
    - Animación de cada modo normal en el visor 3D (amplitud, velocidad, flechas, XYZ animado)
    - Termoquímica (ZPVE, H, G)
    - Trayectoria de la optimización (gráfico de energía + animación paso a paso)
+   - **Geometría en vivo**: mientras Psi4 optimiza, el visor 3D se actualiza con la geometría
+     de cada paso (transición suave), junto con la energía, ΔE y el gradiente máximo. El script
+     envuelve `psi4.driver.driver.gradient`, que el ciclo de optimización llama en cada paso, y
+     emite líneas `@@GEOM` que el servidor entrega en `GET /api/calculos/:id` (campo `vivo`).
    - **Salida completa de Psi4 como .out**, la **entrada .in** equivalente (para ejecutarla con
      `psi4 archivo.in archivo.out` en otra computadora), la geometría final (.xyz) e imagen PNG del visor
 
