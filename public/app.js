@@ -649,6 +649,7 @@ function seguir(id) {
   estado.trabajo = id;
   estado.resultado = null;
   estado.vivo = null;
+  detenerVivo();
   $('#vivoOpt').hidden = true;
   $('#barraVib').hidden = true;
   const sec = $('#seccionResultados');
@@ -667,7 +668,9 @@ function seguir(id) {
     if (token !== estado.token) return;
     let t;
     try {
-      t = await api(`/api/calculos/${id}`);
+      // ?desde=N: sólo los pasos de la optimización que aún no se han mostrado
+      const desde = estado.vivoCola?.id === id ? `?desde=${estado.vivoCola.ultimo}` : '';
+      t = await api(`/api/calculos/${id}${desde}`);
     } catch (e) {
       if (e.status === 404) { finSeguimiento(); mostrarError({ error: e.message }); quitarDelHistorial(id); return; }
       setTimeout(ciclo, 5000);
@@ -748,12 +751,30 @@ function graficoVivo(energias) {
     <text x="${(m.i + W) / 2}" y="${H - 3}" text-anchor="middle">paso de optimización (E en kcal/mol)</text>`;
 }
 
+// Recibe los pasos nuevos del servidor y los pone en cola: se muestran todos, en orden
 function mostrarVivo(t, id) {
   const v = t.vivo;
-  if (!v || !v.xyz || v.paso === estado.vivo?.paso) return;
+  if (!v) return;
+  if (estado.vivoCola?.id !== id) estado.vivoCola = { id, lista: [], ultimo: 0, ocupado: false };
+  const cola = estado.vivoCola;
+  const nuevos = (Array.isArray(v.pasos) ? v.pasos : [v]).filter((p) => p && p.xyz && p.paso > cola.ultimo);
+  for (const p of nuevos) { cola.lista.push(p); cola.ultimo = Math.max(cola.ultimo, p.paso); }
+  // Si se abre un cálculo ya avanzado, no se reproducen decenas de pasos atrasados
+  if (cola.lista.length > 6) cola.lista = cola.lista.slice(-3);
+  cola.energias = v.energias || [];
+  cola.formula = t.formula || '';
+  if (!cola.ocupado) reproducirPaso();
+}
+
+function reproducirPaso() {
+  const cola = estado.vivoCola;
+  if (!cola) return;
+  const v = cola.lista.shift();
+  if (!v) { cola.ocupado = false; return; }
+  cola.ocupado = true;
   const nuevas = leerCoordenadas(v.xyz);
-  if (!nuevas.length) return;
-  const molblock = estado.molblocks.get(id) || null;
+  if (!nuevas.length) { reproducirPaso(); return; }
+  const molblock = estado.molblocks.get(cola.id) || null;
   if (!estado.vivo) {
     // Primer paso: se quitan superficies y vibraciones del cálculo anterior
     detenerAnimacion();
@@ -768,17 +789,20 @@ function mostrarVivo(t, id) {
   estado.vivo = { paso: v.paso, coords: nuevas };
   cancelAnimationFrame(estado.vivoAnim);
   const reducido = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const t0 = performance.now(); const dur = 700;
+  const t0 = performance.now();
+  const dur = cola.lista.length > 1 ? 400 : 700; // con pasos pendientes, transición más rápida
   const cuadro = (ahoraMs) => {
     const f = interpolar && !reducido ? Math.min(1, Math.max(0, (ahoraMs - t0) / dur)) : 1;
     const k = f * f * (3 - 2 * f); // suavizado
     dibujarCoordenadas(nuevas.map((c, i) => ({ e: c.e, p: interpolar ? c.p.map((x, j) => actuales[i].p[j] + (x - actuales[i].p[j]) * k) : c.p })), molblock);
     if (f < 1) estado.vivoAnim = requestAnimationFrame(cuadro);
+    else estado.vivoTimer = setTimeout(reproducirPaso, cola.lista.length ? 250 : 0);
   };
   estado.vivoAnim = requestAnimationFrame(cuadro);
 
-  const E = v.energias || [];
-  const previa = E.length > 1 ? E[E.length - 2] : null;
+  // energias[i] corresponde al paso i + 1
+  const E = (cola.energias || []).slice(0, v.paso);
+  const previa = v.paso > 1 ? E[v.paso - 2] : null;
   const dE = Number.isFinite(previa) && Number.isFinite(v.energia) ? (v.energia - previa) * HARTREE_KCAL : null;
   $('#vivoTexto').innerHTML = [
     `Paso ${v.paso}`,
@@ -788,12 +812,18 @@ function mostrarVivo(t, id) {
   ].filter(Boolean).join(' · ');
   graficoVivo(E);
   $('#vivoOpt').hidden = false;
-  $('#etiquetaModelo').textContent = `${t.formula || ''} · optimizando: paso ${v.paso}`;
+  $('#etiquetaModelo').textContent = `${cola.formula} · optimizando: paso ${v.paso}`;
+}
+
+function detenerVivo() {
+  cancelAnimationFrame(estado.vivoAnim);
+  clearTimeout(estado.vivoTimer);
+  estado.vivoCola = null;
 }
 
 function finSeguimiento() {
   clearInterval(estado.reloj);
-  cancelAnimationFrame(estado.vivoAnim);
+  detenerVivo();
   $('#vivoOpt').hidden = true;
   $('#progreso').hidden = true;
   $('#cancelar').hidden = true;

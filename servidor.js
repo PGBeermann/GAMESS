@@ -158,9 +158,13 @@ function ejecutar(t) {
         // Geometría de cada paso de la optimización, para actualizar el visor 3D en vivo
         try {
           const g = JSON.parse(l.slice(7));
-          if (!t.vivo) t.vivo = { energias: [] };
-          Object.assign(t.vivo, { paso: g.paso, energia: g.energia, grad_rms: g.grad_rms, grad_max: g.grad_max, xyz: String(g.xyz || '') });
+          if (!t.vivo) t.vivo = { energias: [], pasos: [] };
+          const paso = { paso: g.paso, energia: g.energia, grad_rms: g.grad_rms, grad_max: g.grad_max, xyz: String(g.xyz || '') };
+          Object.assign(t.vivo, paso);
           if (t.vivo.energias.length < 500) t.vivo.energias.push(g.energia);
+          // Se guardan todos los pasos (hasta 300) para que la página no se salte ninguno
+          t.vivo.pasos.push(paso);
+          if (t.vivo.pasos.length > 300) t.vivo.pasos.shift();
         } catch { /* línea incompleta o no válida */ }
       }
     }
@@ -394,7 +398,12 @@ app.get('/api/calculos/:id', async (req, res) => {
   if (!t) return;
   const r = resumen(t);
   if (t.estado === 'ejecutando' || t.estado === 'error') r.registro = await colaSalida(t.id);
-  if (t.estado === 'ejecutando' && t.vivo) r.vivo = t.vivo;
+  if (t.estado === 'ejecutando' && t.vivo) {
+    // ?desde=N devuelve sólo los pasos posteriores al N (los que la página aún no tiene)
+    const desde = Math.max(0, parseInt(req.query.desde, 10) || 0);
+    const { pasos, ...ultimo } = t.vivo;
+    r.vivo = { ...ultimo, pasos: pasos.filter((p) => p.paso > desde).slice(0, 50) };
+  }
   if (t.estado === 'terminado' || t.estado === 'error') {
     try { r.resultado = JSON.parse(await fsp.readFile(path.join(carpetaDe(t.id), 'resultado.json'), 'utf8')); } catch { /* nada */ }
     if (r.resultado) delete r.resultado.traza;
