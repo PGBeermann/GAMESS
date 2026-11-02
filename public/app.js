@@ -21,7 +21,7 @@ const EJEMPLOS = [
 const estado = {
   opciones: null, geom: null, modificada: true, jsme: null, visor: null,
   trabajo: null, resultado: null, token: 0, reloj: null, inicio: null,
-  modelo: null, cubos: new Map(), reproductor: null, girando: false, modoActivo: null,
+  modelo: null, cubos: new Map(), reproductor: null, girando: false, modoActivo: null, flechas: [],
 };
 
 // ---------- Utilidades ----------
@@ -155,7 +155,7 @@ function estiloActual() {
 function ponerEtiquetas() {
   const v = estado.visor;
   v.removeAllLabels();
-  if (!$('#etiquetas').checked || !v.getModel()) return;
+  if (!$('#etiquetas').checked || !v.getModel() || estado.modoActivo) return;
   const cargas = estado.resultado?.cargas_mulliken;
   const conCarga = $('#colorCargas').checked && cargas;
   v.getModel().selectedAtoms({}).forEach((a, i) => {
@@ -172,11 +172,18 @@ function aplicarEstilo() {
   v.render();
 }
 
+function quitarFlechas() {
+  for (const s of estado.flechas || []) estado.visor.removeShape(s);
+  estado.flechas = [];
+}
+
 function detenerAnimacion() {
   estado.visor.stopAnimate();
   clearInterval(estado.reproductor);
   estado.reproductor = null;
   estado.modoActivo = null;
+  quitarFlechas();
+  $('#vibPlay').textContent = '▶ Animar';
   $$('.barra.activa').forEach((b) => b.classList.remove('activa'));
   $$('tr.activa').forEach((r) => r.classList.remove('activa'));
 }
@@ -289,6 +296,7 @@ async function generar3D() {
     estado.geom = g;
     estado.modificada = false;
     estado.resultado = null;
+    $('#barraVib').hidden = true;
     $('#ctrlCargas').hidden = true;
     $('#colorCargas').checked = false;
     $('#carga').value = g.carga;
@@ -347,6 +355,7 @@ function seguir(id) {
   const token = ++estado.token;
   estado.trabajo = id;
   estado.resultado = null;
+  $('#barraVib').hidden = true;
   const sec = $('#seccionResultados');
   sec.hidden = false;
   $('#resultados').hidden = true;
@@ -434,7 +443,8 @@ function mostrarResultado(t) {
   panelVibraciones(r);
   panelOptimizacion(r);
   panelArchivos(t, r);
-  $('#tabVib').disabled = !r.frecuencias;
+  $('#tabVib').disabled = false;
+  prepararVibraciones(r);
   $('#tabOpt').disabled = !(r.trayectoria && r.trayectoria.length);
   abrirPestana('resumen');
 }
@@ -566,16 +576,22 @@ function espectroIR(modos, escala) {
 function panelVibraciones(r) {
   const panel = $('[data-panel="vibraciones"]');
   const f = r.frecuencias;
-  if (!f) { panel.innerHTML = '<p class="nota">Elija «Optimización + frecuencias» para obtener el espectro IR.</p>'; return; }
+  if (!f) {
+    const n = (r.geometria_xyz || '').trim().split('\n').length;
+    panel.innerHTML = n < 2
+      ? '<p class="nota">Un átomo aislado no tiene modos de vibración.</p>'
+      : `<p class="nota">Este cálculo no incluyó frecuencias, por eso no hay modos de vibración para animar.</p>
+         <button class="btn" type="button" id="calcFrecuencias">Calcular frecuencias de esta molécula (${esc(nombreDe('metodos', r.metodo))}/${esc(nombreDe('bases', r.base))})</button>
+         <p class="nota">Se parte de la geometría ${r.tarea === 'energia' ? 'de este cálculo' : 'ya optimizada'}; Psi4 la reoptimiza (pocos pasos) y calcula el hessiano. Los resultados se abren aquí al terminar.</p>`;
+    panel.onclick = (ev) => { if (ev.target.id === 'calcFrecuencias') calcularFrecuencias(ev.target); };
+    return;
+  }
   const sugerido = { hf: 0.90, b3lyp: 0.96, pbe0: 0.95, 'wb97x-d': 0.95, 'm06-2x': 0.95, mp2: 0.95 }[r.metodo] || 1;
   let html = `<div class="controles-fila">
     <label>Factor de escala <input type="number" id="escalaIR" min="0.8" max="1.1" step="0.005" value="1"></label>
     <span class="nota">(sugerido para ${esc(nombreDe('metodos', r.metodo))}: ≈${sugerido})</span>
-    <label>Amplitud <input type="range" id="amplitud" min="0.1" max="1.2" step="0.05" value="0.5"></label>
-    <label class="chk"><input type="checkbox" id="flechas" checked> Flechas</label>
-    <button class="btn sec chico" type="button" id="detenerVib">Detener animación</button>
   </div><div id="espectro"></div>
-  <p class="nota">Haga clic en un pico o en una fila de la tabla para animar el modo normal en el visor 3D. Frecuencias armónicas${f.modos.some((x) => x.intensidad_ir != null) ? '; intensidades IR en km/mol' : '; esta versión de Psi4 no entregó intensidades IR'}.</p>
+  <p class="nota">Haga clic en un pico o en una fila de la tabla para animar ese modo normal en el visor 3D. Con la barra «Vibración» bajo el visor puede recorrer los ${f.modos.length} modos, cambiar amplitud y velocidad, y descargar la animación. Frecuencias armónicas${f.modos.some((x) => x.intensidad_ir != null) ? '; intensidades IR en km/mol' : ''}.</p>
   <div class="tabla-scroll"><table><thead><tr><th>Modo</th><th class="num">Frecuencia (cm⁻¹)</th><th class="num">Escalada</th><th class="num">Intensidad IR (km/mol)</th></tr></thead><tbody id="tablaModos">`;
   for (const x of f.modos) {
     html += `<tr class="clic" data-modo="${x.numero}"><td>${x.numero}</td><td class="num">${x.imaginaria ? `${Math.abs(x.frecuencia_cm).toFixed(1)} i` : x.frecuencia_cm.toFixed(1)}</td><td class="num" data-escalada="${x.frecuencia_cm}">${x.imaginaria ? '—' : x.frecuencia_cm.toFixed(1)}</td><td class="num">${x.intensidad_ir != null ? x.intensidad_ir.toFixed(2) : '—'}</td></tr>`;
@@ -590,38 +606,114 @@ function panelVibraciones(r) {
   };
   dibujar();
   $('#escalaIR').addEventListener('input', dibujar);
-  $('#amplitud').addEventListener('change', () => estado.modoActivo && animarModo(estado.modoActivo));
-  $('#flechas').addEventListener('change', () => estado.modoActivo && animarModo(estado.modoActivo));
-  $('#detenerVib').addEventListener('click', () => { cargarModelo(estado.resultado.geometria_xyz, 'xyz', { zoom: false }); });
   panel.onclick = (ev) => {
     const el = ev.target.closest('[data-modo]');
-    if (el) animarModo(parseInt(el.dataset.modo, 10));
+    if (!el) return;
+    animarModo(parseInt(el.dataset.modo, 10));
+    $('#visor').scrollIntoView({ behavior: 'smooth', block: 'center' });
   };
 }
 
-function animarModo(numero) {
-  const r = estado.resultado;
-  const modo = r.frecuencias.modos.find((x) => x.numero === numero);
-  if (!modo || !modo.desplazamientos) return;
-  cargarModelo(r.geometria_xyz, 'xyz', { zoom: false });
-  const v = estado.visor;
-  v.removeAllLabels();
-  const modelo = v.getModel();
-  modelo.selectedAtoms({}).forEach((a, i) => {
-    const d = modo.desplazamientos[i] || [0, 0, 0];
-    a.dx = d[0]; a.dy = d[1]; a.dz = d[2];
+// ---------- Animación de los modos normales ----------
+const textoFrecuencia = (m) => (m.imaginaria ? `${Math.abs(m.frecuencia_cm).toFixed(1)}i` : m.frecuencia_cm.toFixed(1));
+const modosAnimables = () => (estado.resultado?.frecuencias?.modos || []).filter((m) => m.desplazamientos);
+
+function atomosBase() {
+  return String(estado.resultado.geometria_xyz).trim().split(/\r?\n/).map((l) => {
+    const [el, x, y, z] = l.trim().split(/\s+/);
+    return { el, x: +x, y: +y, z: +z };
   });
-  const amp = parseFloat($('#amplitud')?.value || '0.5');
-  const flechas = $('#flechas')?.checked ? { color: '#c41237', radius: 0.06 } : undefined;
-  // 3Dmol necesita al menos un cuadro registrado para poder generar la vibración
-  if (!modelo.getNumFrames()) modelo.frames = [modelo.atoms];
-  modelo.vibrate(12, amp, true, flechas);
-  v.animate({ loop: 'backAndForth', interval: 50 });
-  v.render();
+}
+
+// Cuadros XYZ de un ciclo completo: x(t) = x0 + A·sen(2πt)·d
+function xyzAnimado(modo, amp, cuadros = 24) {
+  const base = atomosBase();
+  let texto = '';
+  for (let k = 0; k < cuadros; k++) {
+    const s = amp * Math.sin((2 * Math.PI * k) / cuadros);
+    texto += `${base.length}\nModo ${modo.numero} ${textoFrecuencia(modo)} cm-1 cuadro ${k + 1}\n`;
+    base.forEach((a, i) => {
+      const d = modo.desplazamientos[i] || [0, 0, 0];
+      texto += `${a.el} ${(a.x + s * d[0]).toFixed(5)} ${(a.y + s * d[1]).toFixed(5)} ${(a.z + s * d[2]).toFixed(5)}\n`;
+    });
+  }
+  return texto;
+}
+
+function animarModo(numero) {
+  const modo = modosAnimables().find((x) => x.numero === numero);
+  if (!modo) return;
+  detenerAnimacion();
+  const v = estado.visor;
+  const amp = parseFloat($('#vibAmplitud').value) || 0.6;
+  const vel = parseFloat($('#vibVelocidad').value) || 5;
   estado.modoActivo = numero;
+  v.removeAllModels();
+  v.removeAllLabels();
+  v.addModelsAsFrames(xyzAnimado(modo, amp), 'xyz');
+  aplicarEstilo();
+  if ($('#vibFlechas').checked) {
+    atomosBase().forEach((a, i) => {
+      const d = modo.desplazamientos[i] || [0, 0, 0];
+      const largo = Math.hypot(...d) * amp;
+      if (largo < 0.06) return;
+      const k = 2 * amp;
+      estado.flechas.push(v.addArrow({
+        start: { x: a.x, y: a.y, z: a.z },
+        end: { x: a.x + k * d[0], y: a.y + k * d[1], z: a.z + k * d[2] },
+        radius: 0.05, radiusRatio: 2.2, mid: 0.75, color: '#c41237',
+      }));
+    });
+  }
+  v.animate({ loop: 'forward', interval: Math.round(110 / vel) });
+  v.render();
+  $('#modoVib').value = String(numero);
+  $('#vibPlay').textContent = '■ Detener';
   $$('[data-barra]').forEach((b) => b.classList.toggle('activa', b.dataset.barra === String(numero)));
   $$('#tablaModos tr').forEach((tr) => tr.classList.toggle('activa', tr.dataset.modo === String(numero)));
-  $('#etiquetaModelo').textContent = `Modo ${numero}: ${modo.imaginaria ? `${Math.abs(modo.frecuencia_cm).toFixed(1)}i` : modo.frecuencia_cm.toFixed(1)} cm⁻¹`;
+  $('#etiquetaModelo').textContent = `Modo ${numero} de ${modosAnimables().length}: ${textoFrecuencia(modo)} cm⁻¹${modo.imaginaria ? ' (imaginaria)' : ''}`;
+}
+
+function detenerVibracion() {
+  if (!estado.resultado) return;
+  cargarModelo(estado.resultado.geometria_xyz, 'xyz', { zoom: false });
+  etiquetaModeloResultado();
+}
+
+function prepararVibraciones(r) {
+  const modos = (r.frecuencias?.modos || []).filter((m) => m.desplazamientos);
+  $('#barraVib').hidden = !modos.length;
+  $('#modoVib').innerHTML = modos.map((m) => `<option value="${m.numero}">Modo ${m.numero} · ${textoFrecuencia(m)} cm⁻¹${m.intensidad_ir != null ? ` · IR ${m.intensidad_ir.toFixed(1)} km/mol` : ''}</option>`).join('');
+}
+
+function pasarModo(paso) {
+  const modos = modosAnimables();
+  if (!modos.length) return;
+  const actual = parseInt($('#modoVib').value, 10);
+  const i = Math.max(0, modos.findIndex((m) => m.numero === actual));
+  animarModo(modos[(i + paso + modos.length) % modos.length].numero);
+}
+
+async function calcularFrecuencias(boton) {
+  const t = estado.infoTrabajo;
+  const r = estado.resultado;
+  boton.disabled = true;
+  try {
+    const nuevo = await api('/api/calculos', {
+      method: 'POST',
+      body: JSON.stringify({
+        xyz: r.geometria_xyz, formula: t.formula, smiles: t.smiles || '',
+        titulo: `${t.titulo} (frecuencias)`.slice(0, 80),
+        metodo: r.metodo, base: r.base, tarea: 'frecuencias',
+        carga: r.carga, multiplicidad: r.multiplicidad, mep: (r.cubos || []).includes('mep'),
+      }),
+    });
+    guardarEnHistorial(nuevo);
+    seguir(nuevo.id);
+  } catch (e) {
+    alert(e.message);
+    boton.disabled = false;
+  }
 }
 
 function panelOptimizacion(r) {
@@ -659,6 +751,10 @@ function panelOptimizacion(r) {
     $('#infoPaso').textContent = `Paso ${tr[i].paso}: E = ${tr[i].energia.toFixed(8)} Eh · ΔE = ${rel[i].toFixed(3)} kcal/mol`;
     $$('[data-paso]').forEach((c) => c.classList.toggle('activo', c.dataset.paso === String(i)));
     const v = estado.visor;
+    v.stopAnimate();
+    quitarFlechas();
+    estado.modoActivo = null;
+    $('#vibPlay').textContent = '▶ Animar';
     v.removeAllModels();
     v.addModel(xyzCompleto(tr[i].xyz), 'xyz');
     aplicarEstilo();
@@ -767,6 +863,23 @@ function eventos() {
   $('#centrar').addEventListener('click', () => { estado.visor.zoomTo(); estado.visor.render(); });
   $('#girar').addEventListener('click', () => { estado.girando = !estado.girando; estado.visor.spin(estado.girando ? 'y' : false); });
   $('#png').addEventListener('click', () => descargar(estado.visor.pngURI(), 'molecula.png'));
+
+  // Barra «Vibración» del visor
+  $('#vibPlay').addEventListener('click', () => {
+    if (estado.modoActivo) detenerVibracion(); else animarModo(parseInt($('#modoVib').value, 10));
+  });
+  $('#modoVib').addEventListener('change', () => animarModo(parseInt($('#modoVib').value, 10)));
+  $('#vibAnterior').addEventListener('click', () => pasarModo(-1));
+  $('#vibSiguiente').addEventListener('click', () => pasarModo(1));
+  ['#vibAmplitud', '#vibVelocidad', '#vibFlechas'].forEach((s) => $(s).addEventListener('change', () => {
+    if (estado.modoActivo) animarModo(estado.modoActivo);
+  }));
+  $('#vibXYZ').addEventListener('click', () => {
+    const modo = modosAnimables().find((m) => m.numero === parseInt($('#modoVib').value, 10));
+    if (!modo) return;
+    const nombre = (estado.infoTrabajo?.titulo || 'molecula').replace(/\s+/g, '_');
+    descargar(xyzAnimado(modo, parseFloat($('#vibAmplitud').value) || 0.6, 20), `${nombre}_modo${modo.numero}.xyz`);
+  });
 
   $('.pestanas').addEventListener('click', (e) => {
     const b = e.target.closest('button[data-pestana]');

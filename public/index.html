@@ -86,6 +86,21 @@
           <button class="btn sec chico" id="png" type="button" title="Descargar imagen PNG">PNG</button>
         </div>
       </div>
+      <div class="barra-vib" id="barraVib" hidden>
+        <div class="fila-vib">
+          <label for="modoVib" class="titulo-vib">Vibración</label>
+          <button class="btn sec chico" id="vibAnterior" type="button" title="Modo anterior" aria-label="Modo anterior">‹</button>
+          <select id="modoVib" aria-label="Modo normal de vibración"></select>
+          <button class="btn sec chico" id="vibSiguiente" type="button" title="Modo siguiente" aria-label="Modo siguiente">›</button>
+          <button class="btn chico" id="vibPlay" type="button">▶ Animar</button>
+        </div>
+        <div class="fila-vib">
+          <label>Amplitud <input id="vibAmplitud" type="range" min="0.1" max="1.5" step="0.05" value="0.6"></label>
+          <label>Velocidad <input id="vibVelocidad" type="range" min="1" max="10" step="1" value="5"></label>
+          <label class="chk"><input type="checkbox" id="vibFlechas" checked> Flechas</label>
+          <button class="btn sec chico" id="vibXYZ" type="button" title="Descargar la animación del modo como XYZ de varios cuadros (Avogadro, Jmol, VMD)">XYZ animado</button>
+        </div>
+      </div>
     </section>
 
     <section class="tarjeta ancho" aria-labelledby="t3">

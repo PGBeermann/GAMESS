@@ -128,6 +128,15 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .barra-visor label { display: flex; align-items: center; gap: 6px; }
 .barra-visor .grupo-btn { margin-left: auto; }
 .chk { display: flex; align-items: center; gap: 6px; }
+.barra-vib {
+  margin-top: 10px; padding: 10px 12px; border: 1px solid var(--borde); border-radius: 8px;
+  background: var(--verde-claro); display: grid; gap: 8px; font-size: .9rem;
+}
+.fila-vib { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
+.fila-vib label { display: flex; align-items: center; gap: 6px; }
+.fila-vib select { flex: 1 1 180px; min-width: 0; }
+.fila-vib input[type="range"] { width: 110px; }
+.titulo-vib { font-weight: 700; color: var(--verde); }
 .ctrl-iso input { width: 110px; }
 .ctrl-iso output { font-family: var(--mono); font-size: .8rem; min-width: 3.5em; }
 
