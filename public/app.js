@@ -36,8 +36,14 @@ async function api(ruta, opciones = {}) {
   const tipo = r.headers.get('content-type') || '';
   const datos = tipo.includes('json') ? await r.json() : await r.text();
   if (!r.ok) {
-    if (r.status === 401) $('#panelClave').hidden = false;
-    const e = new Error((datos && datos.error) || `Error ${r.status}`);
+    let mensaje = (datos && datos.error) || `Error ${r.status}`;
+    if (r.status === 401) {
+      $('#panelClave').hidden = false;
+      mensaje = clave
+        ? 'La clave de acceso no es correcta. Escríbala de nuevo en el recuadro de arriba.'
+        : 'Escriba arriba la clave de acceso del curso para empezar.';
+    }
+    const e = new Error(mensaje);
     e.status = r.status;
     throw e;
   }
@@ -785,11 +791,17 @@ function eventos() {
   $('#historial').addEventListener('keydown', (e) => { if (e.key === 'Enter') abrir(e.target.closest('li')); });
   $('#borrarHistorial').addEventListener('click', () => { if (confirm('¿Quitar todos los cálculos de esta lista? (no se borran del servidor)')) { escribirLS(LS_HIST, []); pintarHistorial(); } });
 
-  $('#guardarClave').addEventListener('click', () => {
-    escribirLS(LS_CLAVE, $('#clave').value);
+  // Al guardar la clave se genera la geometría 3D de la molécula del editor (así se comprueba la clave)
+  const entrarConClave = () => {
+    const clave = $('#clave').value.trim();
+    if (!clave) { $('#clave').focus(); return; }
+    escribirLS(LS_CLAVE, clave);
     $('#panelClave').hidden = true;
     cargarOpciones();
-  });
+    if (estado.jsme) generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; });
+  };
+  $('#guardarClave').addEventListener('click', entrarConClave);
+  $('#clave').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); entrarConClave(); } });
 }
 
 // ---------- Inicio ----------
