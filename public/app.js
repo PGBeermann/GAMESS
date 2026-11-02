@@ -184,7 +184,7 @@ function detenerAnimacion() {
   estado.modoActivo = null;
   quitarFlechas();
   $('#vibPlay').textContent = '▶ Animar';
-  $$('.barra.activa').forEach((b) => b.classList.remove('activa'));
+  $$('.barra.activa, .etq.activa').forEach((b) => b.classList.remove('activa'));
   $$('tr.activa').forEach((r) => r.classList.remove('activa'));
 }
 
@@ -428,6 +428,7 @@ function mostrarResultado(t) {
   const r = t.resultado;
   estado.resultado = r;
   estado.infoTrabajo = t;
+  estado.asignaciones = r.frecuencias && window.asignarModos ? asignarModos(r.geometria_xyz, r.frecuencias.modos) : new Map();
   $('#resultados').hidden = false;
   $('#errorCalculo').hidden = true;
   pildora(t);
@@ -537,18 +538,54 @@ function panelCargas(r) {
   panel.innerHTML = html;
 }
 
-function espectroIR(modos, escala) {
-  const W = 760; const H = 280; const m = { l: 46, r: 14, t: 14, b: 40 };
+// ---------- Espectro IR simulado con asignaciones ----------
+const SVG_ESTILO = `<style>
+  text { font-family: var(--sans, "Segoe UI", Arial, sans-serif); font-size: 12px; fill: var(--gris, #5b6660); }
+  .eje { stroke: var(--gris, #5b6660); stroke-width: 1; }
+  .rejilla { stroke: var(--borde, #d9e2d5); stroke-width: 1; }
+  .curva { fill: none; stroke: var(--verde, #299100); stroke-width: 1.8; }
+  .barra { stroke: var(--rojo, #c41237); stroke-width: 1.4; }
+  .barra.activa { stroke: var(--azul, #1d4ed8); stroke-width: 3; }
+  .guia { fill: none; stroke: var(--gris, #5b6660); stroke-width: .7; stroke-dasharray: 2 2; }
+  .etq text { fill: var(--texto, #16201a); }
+  .etq .num { font-weight: 700; }
+  .etq.activa text { fill: var(--azul, #1d4ed8); }
+  .etq, .barra-clic { cursor: pointer; }
+  .barra-clic { fill: transparent; }
+  .titulo { font-weight: 700; fill: var(--texto, #16201a); }
+</style>`;
+
+// Agrupa modos casi degenerados (|Δν| < 2 cm⁻¹) en una sola banda
+function bandasIR(modos, escala) {
+  const reales = modos.filter((x) => !x.imaginaria).map((x) => ({ ...x, nu: x.frecuencia_cm * escala })).sort((a, b) => a.nu - b.nu);
+  const bandas = [];
+  for (const m of reales) {
+    const b = bandas[bandas.length - 1];
+    if (b && Math.abs(m.nu - b.nu) < 2) { b.modos.push(m); b.I += m.intensidad_ir || 0; } else bandas.push({ nu: m.nu, modos: [m], I: m.intensidad_ir || 0 });
+  }
+  return bandas;
+}
+
+function espectroIR(modos, op) {
+  const { escala = 1, fwhm = 20, transmitancia = false, todas = false, titulo = '' } = op;
+  const asig = estado.asignaciones || new Map();
+  const W = 900; const H = 500;
+  const banda = 160; // franja superior para las etiquetas
+  const m = { l: 58, r: 16, t: banda + 14, b: 46 };
   const reales = modos.filter((x) => !x.imaginaria);
-  if (!reales.length) return '<p class="nota">No hay modos reales.</p>';
+  if (!reales.length) return '<p class="nota">No hay modos reales que dibujar.</p>';
   const conI = reales.some((x) => x.intensidad_ir != null);
   const I = (x) => (conI ? Math.max(0, x.intensidad_ir || 0) : 1);
   const fmax = Math.max(...reales.map((x) => x.frecuencia_cm * escala));
-  const xmax = Math.max(4000, Math.ceil((fmax + 200) / 500) * 500); const xmin = 400;
+  const fmin = Math.min(...reales.map((x) => x.frecuencia_cm * escala));
+  const xmax = Math.max(4000, Math.ceil((fmax + 200) / 500) * 500);
+  const xmin = Math.max(0, Math.min(400, Math.floor((fmin - 60) / 100) * 100));
   const X = (f) => m.l + ((xmax - f) / (xmax - xmin)) * (W - m.l - m.r);
-  const Y = (v) => H - m.b - v * (H - m.t - m.b);
+  const alto = H - m.t - m.b;
+  // v ∈ [0,1] de absorbancia relativa → coordenada y
+  const Y = (v) => (transmitancia ? m.t + v * 0.92 * alto : H - m.b - v * 0.92 * alto);
+  const g = fwhm / 2;
   const imax = Math.max(...reales.map(I)) || 1;
-  const g = 10; // semianchura (cm⁻¹) de la lorentziana
   const pts = [];
   let cmax = 0;
   for (let f = xmin; f <= xmax; f += 2) {
@@ -556,21 +593,67 @@ function espectroIR(modos, escala) {
     for (const x of reales) { const d = f - x.frecuencia_cm * escala; s += I(x) * g * g / (d * d + g * g); }
     pts.push([f, s]); cmax = Math.max(cmax, s);
   }
-  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="Espectro infrarrojo simulado">`;
+  const curva = (f) => { let s = 0; for (const x of reales) { const d = f - x.frecuencia_cm * escala; s += I(x) * g * g / (d * d + g * g); } return s / (cmax || 1); };
+
+  let svg = `<svg class="grafico" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${W} ${H}" role="img" aria-label="Espectro infrarrojo simulado con asignaciones">${SVG_ESTILO}`;
+  if (titulo) svg += `<text class="titulo" x="${m.l}" y="16">${esc(titulo)}</text>`;
+  // Rejilla y ejes
   for (let f = Math.ceil(xmin / 500) * 500; f <= xmax; f += 500) {
-    svg += `<line class="rejilla" x1="${X(f)}" x2="${X(f)}" y1="${m.t}" y2="${H - m.b}"/><text x="${X(f)}" y="${H - m.b + 16}" text-anchor="middle">${f}</text>`;
+    svg += `<line class="rejilla" x1="${X(f)}" x2="${X(f)}" y1="${m.t}" y2="${H - m.b}"/><text x="${X(f)}" y="${H - m.b + 17}" text-anchor="middle">${f}</text>`;
+  }
+  // Marcas del eje Y: absorbancia relativa 0–1, o transmitancia T = 100 − 92·A (%)
+  const marcas = transmitancia ? [100, 80, 60, 40, 20].map((t) => [(100 - t) / 92, String(t)]) : [0, 0.25, 0.5, 0.75, 1].map((v) => [v, v.toFixed(2)]);
+  for (const [v, txt] of marcas) {
+    svg += `<line class="rejilla" x1="${m.l - 4}" x2="${m.l}" y1="${Y(v).toFixed(1)}" y2="${Y(v).toFixed(1)}"/><text x="${m.l - 6}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${txt}</text>`;
   }
   svg += `<line class="eje" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/><line class="eje" x1="${m.l}" x2="${m.l}" y1="${m.t}" y2="${H - m.b}"/>`;
-  svg += `<text x="${(W + m.l) / 2}" y="${H - 6}" text-anchor="middle">Número de onda (cm⁻¹)</text>`;
-  svg += `<text x="12" y="${(H - m.b + m.t) / 2}" text-anchor="middle" transform="rotate(-90 12 ${(H - m.b + m.t) / 2})">${conI ? 'Intensidad relativa' : 'Modos (sin intensidad)'}</text>`;
+  svg += `<text x="${(W + m.l) / 2}" y="${H - 8}" text-anchor="middle">Número de onda (cm⁻¹)</text>`;
+  const ymid = (m.t + H - m.b) / 2;
+  svg += `<text x="14" y="${ymid}" text-anchor="middle" transform="rotate(-90 14 ${ymid})">${transmitancia ? 'Transmitancia (%)' : (conI ? 'Absorbancia relativa' : 'Modos (sin intensidad)')}</text>`;
+  // Curva (lorentzianas)
   if (conI) svg += `<path class="curva" d="M${pts.map(([f, s]) => `${X(f).toFixed(1)},${Y(s / cmax).toFixed(1)}`).join('L')}"/>`;
+  // Barras de cada modo (zona de clic ancha)
   for (const x of reales) {
     const xx = X(x.frecuencia_cm * escala).toFixed(1);
-    const alto = Y(I(x) / imax).toFixed(1);
-    svg += `<rect class="barra-clic" data-modo="${x.numero}" x="${xx - 5}" y="${m.t}" width="10" height="${H - m.b - m.t}"><title>Modo ${x.numero}: ${(x.frecuencia_cm * escala).toFixed(1)} cm⁻¹${x.intensidad_ir != null ? ` · ${x.intensidad_ir.toFixed(1)} km/mol` : ''}</title></rect>`;
-    svg += `<line class="barra" data-barra="${x.numero}" x1="${xx}" x2="${xx}" y1="${H - m.b}" y2="${alto}"/>`;
+    const v = I(x) / imax;
+    const tip = `Modo ${x.numero}: ${(x.frecuencia_cm * escala).toFixed(1)} cm⁻¹${x.intensidad_ir != null ? ` · ${x.intensidad_ir.toFixed(1)} km/mol` : ''}${asig.get(x.numero) ? ` · ${asig.get(x.numero).larga}` : ''}`;
+    svg += `<rect class="barra-clic" data-modo="${x.numero}" x="${xx - 5}" y="${m.t}" width="10" height="${alto}"><title>${esc(tip)}</title></rect>`;
+    svg += `<line class="barra${estado.modoActivo === x.numero ? ' activa' : ''}" data-barra="${x.numero}" x1="${xx}" x2="${xx}" y1="${Y(0).toFixed(1)}" y2="${Y(v).toFixed(1)}"/>`;
   }
+  // Etiquetas: número de onda + asignación corta
+  let bandas = bandasIR(modos, escala);
+  const bmax = Math.max(...bandas.map((b) => b.I)) || 1;
+  if (!todas && conI) bandas = bandas.filter((b) => b.I / bmax >= 0.02);
+  const sep = 14;
+  const ancho = W - m.l - m.r - 12;
+  const maxEtq = Math.floor(ancho / sep);
+  if (bandas.length > maxEtq) bandas = [...bandas].sort((a, b) => b.I - a.I).slice(0, maxEtq).sort((a, b) => a.nu - b.nu);
+  // De mayor a menor número de onda = de izquierda a derecha
+  bandas.sort((a, b) => b.nu - a.nu);
+  const pos = bandas.map((b) => X(b.nu));
+  const L = m.l + 8; const R = W - m.r - 4;
+  for (let i = 0; i < pos.length; i++) pos[i] = Math.max(pos[i], i ? pos[i - 1] + sep : L);
+  if (pos.length && pos[pos.length - 1] > R) {
+    pos[pos.length - 1] = R;
+    for (let i = pos.length - 2; i >= 0; i--) pos[i] = Math.min(pos[i], pos[i + 1] - sep);
+  }
+  bandas.forEach((b, i) => {
+    const px = X(b.nu);
+    const lx = pos[i];
+    const tope = transmitancia ? m.t : Y(curvaOStick(b));
+    const a = asig.get(b.modos[0].numero);
+    const corta = a ? a.corta : '';
+    const corto = corta.length > 25 ? `${corta.slice(0, 24)}…` : corta;
+    const activa = b.modos.some((x) => x.numero === estado.modoActivo);
+    svg += `<path class="guia" d="M${lx.toFixed(1)},${banda + 4} L${lx.toFixed(1)},${banda + 8} L${px.toFixed(1)},${(tope - 4).toFixed(1)}"/>`;
+    svg += `<g class="etq${activa ? ' activa' : ''}" data-modo="${b.modos[0].numero}"><title>${esc(b.modos.map((x) => `Modo ${x.numero}`).join(', '))} · ${b.nu.toFixed(1)} cm⁻¹${a ? ` · ${esc(a.larga)}` : ''}</title>`;
+    svg += `<text transform="translate(${(lx + 4).toFixed(1)},${banda}) rotate(-90)"><tspan class="num">${Math.round(b.nu)}${b.modos.length > 1 ? ` (×${b.modos.length})` : ''}</tspan>${corto ? ` ${esc(corto)}` : ''}</text></g>`;
+  });
   return `${svg}</svg>`;
+
+  function curvaOStick(b) {
+    return conI ? Math.max(curva(b.nu), Math.max(...b.modos.map(I)) / imax) : 1;
+  }
 }
 
 function panelVibraciones(r) {
@@ -580,32 +663,81 @@ function panelVibraciones(r) {
     const n = (r.geometria_xyz || '').trim().split('\n').length;
     panel.innerHTML = n < 2
       ? '<p class="nota">Un átomo aislado no tiene modos de vibración.</p>'
-      : `<p class="nota">Este cálculo no incluyó frecuencias, por eso no hay modos de vibración para animar.</p>
+      : `<p class="nota">Este cálculo no incluyó frecuencias, por eso no hay espectro IR ni modos de vibración.</p>
          <button class="btn" type="button" id="calcFrecuencias">Calcular frecuencias de esta molécula (${esc(nombreDe('metodos', r.metodo))}/${esc(nombreDe('bases', r.base))})</button>
          <p class="nota">Se parte de la geometría ${r.tarea === 'energia' ? 'de este cálculo' : 'ya optimizada'}; Psi4 la reoptimiza (pocos pasos) y calcula el hessiano. Los resultados se abren aquí al terminar.</p>`;
     panel.onclick = (ev) => { if (ev.target.id === 'calcFrecuencias') calcularFrecuencias(ev.target); };
     return;
   }
+  const asig = estado.asignaciones || new Map();
   const sugerido = { hf: 0.90, b3lyp: 0.96, pbe0: 0.95, 'wb97x-d': 0.95, 'm06-2x': 0.95, mp2: 0.95 }[r.metodo] || 1;
   let html = `<div class="controles-fila">
     <label>Factor de escala <input type="number" id="escalaIR" min="0.8" max="1.1" step="0.005" value="1"></label>
-    <span class="nota">(sugerido para ${esc(nombreDe('metodos', r.metodo))}: ≈${sugerido})</span>
-  </div><div id="espectro"></div>
-  <p class="nota">Haga clic en un pico o en una fila de la tabla para animar ese modo normal en el visor 3D. Con la barra «Vibración» bajo el visor puede recorrer los ${f.modos.length} modos, cambiar amplitud y velocidad, y descargar la animación. Frecuencias armónicas${f.modos.some((x) => x.intensidad_ir != null) ? '; intensidades IR en km/mol' : ''}.</p>
-  <div class="tabla-scroll"><table><thead><tr><th>Modo</th><th class="num">Frecuencia (cm⁻¹)</th><th class="num">Escalada</th><th class="num">Intensidad IR (km/mol)</th></tr></thead><tbody id="tablaModos">`;
+    <button class="btn sec chico" type="button" id="usarSugerido">Usar ${sugerido} (sugerido para ${esc(nombreDe('metodos', r.metodo))})</button>
+    <label>Ancho de banda <input type="number" id="anchoIR" min="4" max="80" step="2" value="20"> cm⁻¹</label>
+    <label>Mostrar <select id="modoIR"><option value="a">Absorbancia</option><option value="t">Transmitancia</option></select></label>
+    <label class="chk"><input type="checkbox" id="todasIR"> Rotular todos los modos</label>
+  </div>
+  <div id="espectro"></div>
+  <div class="controles-fila">
+    <button class="btn sec chico" type="button" id="bajarSVG">Espectro SVG</button>
+    <button class="btn sec chico" type="button" id="bajarPNG">Espectro PNG</button>
+    <button class="btn sec chico" type="button" id="bajarCSV">Tabla CSV</button>
+  </div>
+  <p class="nota">Cada banda lleva su número de onda (cm⁻¹) y su asignación: <b>ν</b> estiramiento, <b>δ</b> flexión o deformación, <b>ρ</b> balanceo, <b>γ</b> flexión fuera del plano, <b>τ</b> torsión; subíndice ₛ simétrico, ₐₛ asimétrico. La asignación se calcula a partir del vector de cada modo (contribución aproximada de cada coordenada interna) y es orientativa. Haga clic en un pico, una etiqueta o una fila para animar el modo en el visor 3D. Frecuencias armónicas${f.modos.some((x) => x.intensidad_ir != null) ? '; intensidades IR en km/mol' : ''}.</p>
+  <div class="tabla-scroll"><table><thead><tr><th>Modo</th><th class="num">ν calculada (cm⁻¹)</th><th class="num">ν escalada</th><th class="num">Intensidad IR (km/mol)</th><th>Asignación</th></tr></thead><tbody id="tablaModos">`;
   for (const x of f.modos) {
-    html += `<tr class="clic" data-modo="${x.numero}"><td>${x.numero}</td><td class="num">${x.imaginaria ? `${Math.abs(x.frecuencia_cm).toFixed(1)} i` : x.frecuencia_cm.toFixed(1)}</td><td class="num" data-escalada="${x.frecuencia_cm}">${x.imaginaria ? '—' : x.frecuencia_cm.toFixed(1)}</td><td class="num">${x.intensidad_ir != null ? x.intensidad_ir.toFixed(2) : '—'}</td></tr>`;
+    const a = asig.get(x.numero);
+    html += `<tr class="clic${estado.modoActivo === x.numero ? ' activa' : ''}" data-modo="${x.numero}"><td>${x.numero}</td>
+      <td class="num">${x.imaginaria ? `${Math.abs(x.frecuencia_cm).toFixed(1)} i` : x.frecuencia_cm.toFixed(1)}</td>
+      <td class="num" data-escalada="${x.frecuencia_cm}">${x.imaginaria ? '—' : x.frecuencia_cm.toFixed(1)}</td>
+      <td class="num">${x.intensidad_ir != null ? x.intensidad_ir.toFixed(2) : '—'}</td>
+      <td class="asig">${a ? `<b>${esc(a.corta)}</b><span>${esc(a.larga)}</span>` : '—'}</td></tr>`;
   }
   html += '</tbody></table></div>';
   panel.innerHTML = html;
+  const opciones = () => ({
+    escala: parseFloat($('#escalaIR').value) || 1,
+    fwhm: Math.min(80, Math.max(4, parseFloat($('#anchoIR').value) || 20)),
+    transmitancia: $('#modoIR').value === 't',
+    todas: $('#todasIR').checked,
+  });
   const dibujar = () => {
-    const esc_ = parseFloat($('#escalaIR').value) || 1;
-    $('#espectro').innerHTML = espectroIR(f.modos, esc_);
-    $$('[data-escalada]').forEach((td) => { td.textContent = (parseFloat(td.dataset.escalada) * esc_).toFixed(1); });
-    if (estado.modoActivo) $(`[data-barra="${estado.modoActivo}"]`)?.classList.add('activa');
+    const op = opciones();
+    $('#espectro').innerHTML = espectroIR(f.modos, op);
+    $$('[data-escalada]').forEach((td) => { td.textContent = (parseFloat(td.dataset.escalada) * op.escala).toFixed(1); });
   };
+  estado.redibujarIR = dibujar;
   dibujar();
-  $('#escalaIR').addEventListener('input', dibujar);
+  ['#escalaIR', '#anchoIR'].forEach((s) => $(s).addEventListener('input', dibujar));
+  ['#modoIR', '#todasIR'].forEach((s) => $(s).addEventListener('change', dibujar));
+  $('#usarSugerido').addEventListener('click', () => { $('#escalaIR').value = sugerido; dibujar(); });
+  const nombre = (estado.infoTrabajo?.titulo || 'molecula').replace(/\s+/g, '_');
+  const svgDescargable = () => espectroIR(f.modos, { ...opciones(), titulo: `${estado.infoTrabajo?.titulo || ''} · ${nombreDe('metodos', r.metodo)}/${nombreDe('bases', r.base)} · IR simulado` })
+    .replace('class="grafico" ', '').replace('<svg ', '<svg width="1800" height="1000" style="background:#fff" ');
+  $('#bajarSVG').addEventListener('click', () => descargar(svgDescargable(), `${nombre}_IR.svg`, 'image/svg+xml'));
+  $('#bajarPNG').addEventListener('click', () => {
+    const img = new Image();
+    img.onload = () => {
+      const c = Object.assign(document.createElement('canvas'), { width: 1800, height: 1000 });
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, c.width, c.height);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      descargar(c.toDataURL('image/png'), `${nombre}_IR.png`);
+    };
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svgDescargable())}`;
+  });
+  $('#bajarCSV').addEventListener('click', () => {
+    const esc_ = opciones().escala;
+    const q = (t) => `"${String(t).replace(/"/g, '""')}"`;
+    const filas = [['modo', 'frecuencia_cm-1', 'escalada_cm-1', 'intensidad_IR_km/mol', 'asignacion', 'descripcion'].join(',')];
+    for (const x of f.modos) {
+      const a = asig.get(x.numero);
+      filas.push([x.numero, x.frecuencia_cm.toFixed(2), x.imaginaria ? '' : (x.frecuencia_cm * esc_).toFixed(2),
+        x.intensidad_ir != null ? x.intensidad_ir.toFixed(3) : '', q(a ? a.corta : ''), q(a ? a.larga : '')].join(','));
+    }
+    descargar(`﻿${filas.join('\r\n')}\r\n`, `${nombre}_modos_IR.csv`, 'text/csv');
+  });
   panel.onclick = (ev) => {
     const el = ev.target.closest('[data-modo]');
     if (!el) return;
@@ -670,8 +802,11 @@ function animarModo(numero) {
   $('#modoVib').value = String(numero);
   $('#vibPlay').textContent = '■ Detener';
   $$('[data-barra]').forEach((b) => b.classList.toggle('activa', b.dataset.barra === String(numero)));
+  $$('.etq').forEach((g) => g.classList.toggle('activa', g.dataset.modo === String(numero)));
   $$('#tablaModos tr').forEach((tr) => tr.classList.toggle('activa', tr.dataset.modo === String(numero)));
-  $('#etiquetaModelo').textContent = `Modo ${numero} de ${modosAnimables().length}: ${textoFrecuencia(modo)} cm⁻¹${modo.imaginaria ? ' (imaginaria)' : ''}`;
+  const asignacion = estado.asignaciones?.get(numero);
+  $('#etiquetaModelo').textContent = `Modo ${numero} de ${modosAnimables().length}: ${textoFrecuencia(modo)} cm⁻¹${modo.imaginaria ? ' (imaginaria)' : ''}${asignacion ? ` · ${asignacion.corta}` : ''}`;
+  $('#etiquetaModelo').title = asignacion ? asignacion.larga : '';
 }
 
 function detenerVibracion() {
@@ -683,7 +818,8 @@ function detenerVibracion() {
 function prepararVibraciones(r) {
   const modos = (r.frecuencias?.modos || []).filter((m) => m.desplazamientos);
   $('#barraVib').hidden = !modos.length;
-  $('#modoVib').innerHTML = modos.map((m) => `<option value="${m.numero}">Modo ${m.numero} · ${textoFrecuencia(m)} cm⁻¹${m.intensidad_ir != null ? ` · IR ${m.intensidad_ir.toFixed(1)} km/mol` : ''}</option>`).join('');
+  const asig = estado.asignaciones || new Map();
+  $('#modoVib').innerHTML = modos.map((m) => `<option value="${m.numero}">Modo ${m.numero} · ${textoFrecuencia(m)} cm⁻¹${asig.get(m.numero) ? ` · ${esc(asig.get(m.numero).corta)}` : ''}${m.intensidad_ir != null ? ` · IR ${m.intensidad_ir.toFixed(1)}` : ''}</option>`).join('');
 }
 
 function pasarModo(paso) {

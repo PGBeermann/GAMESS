@@ -130,11 +130,11 @@ input:focus-visible, select:focus-visible, button:focus-visible { outline: 2px s
 .chk { display: flex; align-items: center; gap: 6px; }
 .barra-vib {
   margin-top: 10px; padding: 10px 12px; border: 1px solid var(--borde); border-radius: 8px;
-  background: var(--verde-claro); display: grid; gap: 8px; font-size: .9rem;
+  background: var(--verde-claro); display: grid; grid-template-columns: minmax(0, 1fr); gap: 8px; font-size: .9rem;
 }
 .fila-vib { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .fila-vib label { display: flex; align-items: center; gap: 6px; }
-.fila-vib select { flex: 1 1 180px; min-width: 0; }
+.fila-vib select { flex: 1 1 180px; min-width: 0; max-width: 100%; text-overflow: ellipsis; }
 .fila-vib input[type="range"] { width: 110px; }
 .titulo-vib { font-weight: 700; color: var(--verde); }
 .ctrl-iso input { width: 110px; }
@@ -187,10 +187,15 @@ tr.destacada td { background: var(--verde-claro); font-weight: 600; }
 tr.clic { cursor: pointer; }
 tr.clic:hover td { background: var(--codigo); }
 tr.activa td { outline: 2px solid var(--verde); outline-offset: -2px; }
+td.asig { white-space: normal; min-width: 220px; }
+td.asig b { font-weight: 700; display: block; }
+td.asig span { display: block; font-size: .8rem; color: var(--gris); }
 .nota { font-size: .85rem; color: var(--gris); margin: 8px 0; }
 .dos-col { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.3fr); gap: 16px; align-items: start; }
 @media (max-width: 760px) { .dos-col { grid-template-columns: minmax(0, 1fr); } }
 .grafico { width: 100%; height: auto; display: block; }
+#espectro { overflow-x: auto; }
+#espectro .grafico { min-width: 720px; }
 .grafico text { fill: var(--gris); font-size: 11px; font-family: var(--sans); }
 .grafico .eje { stroke: var(--gris); stroke-width: 1; }
 .grafico .rejilla { stroke: var(--borde); stroke-width: 1; }

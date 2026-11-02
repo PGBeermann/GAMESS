@@ -18,7 +18,12 @@ el potencial electrostático y las vibraciones.
    - Momento dipolar, cargas de Mulliken (también como colores y etiquetas en 3D)
    - Diagrama y tabla de orbitales, HOMO/LUMO y brecha
    - Superficies 3D: orbitales HOMO y LUMO, potencial electrostático (MEP) sobre la isodensidad 0.002
-   - Espectro IR simulado con factor de escala, animación de cada modo normal, termoquímica (ZPVE, H, G)
+   - Espectro IR simulado (absorbancia o transmitancia, factor de escala y ancho de banda ajustables)
+     con cada banda rotulada con su número de onda (cm⁻¹) y su **asignación**: ν estiramiento,
+     δ flexión/deformación, ρ balanceo, γ fuera del plano, τ torsión, con ₛ/ₐₛ simétrico/asimétrico
+     y grupos CH₃/CH₂. Descarga del espectro en SVG/PNG y de la tabla de modos en CSV
+   - Animación de cada modo normal en el visor 3D (amplitud, velocidad, flechas, XYZ animado)
+   - Termoquímica (ZPVE, H, G)
    - Trayectoria de la optimización (gráfico de energía + animación paso a paso)
    - Descarga de la salida completa de Psi4 y de la geometría final (.xyz), imagen PNG del visor
 
@@ -32,6 +37,7 @@ python/geometria.py      JSME (molfile/SMILES) → geometría 3D con RDKit
 python/calculo_psi4.py   Ejecuta Psi4 y escribe resultado.json + archivos .cube
 python/version.py        Informa versiones de Psi4 y RDKit
 public/                  Interfaz (index.html, app.js, estilos.css)
+public/asignaciones.js   Asignación automática de modos (PED aproximada con coordenadas internas)
 environment.yml          Psi4 1.11 + RDKit + Python 3.12 + Node.js 22 (conda-forge)
 Dockerfile               Imagen para Dokploy
 ```
@@ -101,6 +107,8 @@ Si `CLAVE_ACCESO` está definida, las rutas `/api/*` (salvo `/api/opciones`) exi
 - Para DFT y MP2 las frecuencias se obtienen por diferencias finitas de gradientes (más lento que HF).
 - Con MP2, orbitales, dipolo y cargas se calculan con la densidad HF de referencia.
 - Las frecuencias son armónicas; use el factor de escala sugerido para comparar con el experimento.
+- Las asignaciones se obtienen proyectando cada modo sobre coordenadas internas (enlaces, ángulos,
+  fuera del plano y torsiones) con constantes de fuerza típicas: una PED aproximada y orientativa.
 
 Créditos: [Psi4](https://psicode.org), [JSME](https://jsme-editor.github.io),
 [3Dmol.js](https://3dmol.csb.pitt.edu), [RDKit](https://www.rdkit.org).
