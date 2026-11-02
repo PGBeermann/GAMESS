@@ -474,7 +474,9 @@ async function abrirArchivo(archivo) {
     abrirEditor(texto, nombre);
     await aplicarEditor(extra);
   } catch (e) {
-    mostrarAvisos([`No se pudo usar ${archivo.name}: ${e.message}`, ...(editorAbierto() ? ['Corrija el código en el editor «Entrada de Psi4» y pulse «Aplicar cambios» o «Ejecutar cálculo».'] : [])], true);
+    // El consejo de corregir el código sólo aplica si el error está en el código (no, p. ej., en la clave)
+    const errorDelCodigo = editorAbierto() && !validarEditor();
+    mostrarAvisos([`No se pudo usar ${archivo.name}: ${e.message}`, ...(errorDelCodigo ? ['Corrija el código en el editor «Entrada de Psi4» y pulse «Aplicar cambios» o «Ejecutar cálculo».'] : [])], true);
     $('#infoMolecula').textContent = 'El archivo no se pudo usar.';
   } finally {
     $('#archivoEntrada').value = '';
