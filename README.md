@@ -11,6 +11,10 @@ el potencial electrostático y las vibraciones.
    el archivo): se leen la molécula (cartesianas o matriz Z, Å o bohr), la carga, la multiplicidad,
    el método, la base y el tipo de cálculo. El .in **no se ejecuta** en el servidor (sería ejecutar
    Python arbitrario): se interpreta y se valida como cualquier otro cálculo.
+   El archivo se abre en un **editor de código** (con números de línea y validación al escribir:
+   los errores señalan la línea). Desde ahí se puede corregir, guardar y **ejecutar el cálculo
+   directamente** (botón «▶ Ejecutar cálculo» o Ctrl+Enter). El botón «Ver / editar entrada (.in)»
+   del formulario abre el mismo editor con la molécula dibujada.
 2. **Generar la geometría 3D**: RDKit añade los hidrógenos, genera coordenadas (ETKDG) y las
    preoptimiza con MMFF94. Sugiere la carga y la multiplicidad.
 3. **Configurar el cálculo**:

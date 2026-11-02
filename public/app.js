@@ -109,6 +109,7 @@ window.jsmeOnLoad = function jsmeOnLoad() {
   estado.jsme.setCallBack('AfterStructureModified', () => {
     if (Date.now() - (estado.cargaArchivo || 0) < 2000) return; // dibujo puesto desde un archivo
     estado.modificada = true;
+    if (editorAbierto()) validarEditor();
   });
   leerEnJSME('CCO');
   $('#titulo').value = 'Etanol';
@@ -311,6 +312,7 @@ async function generar3D() {
     cargarModelo(g.molblock, 'sdf');
     $('#etiquetaModelo').textContent = `${g.formula} · geometría inicial (${g.campo_fuerza})`;
     actualizarEstimacion();
+    if (editorAbierto()) validarEditor();
     return g;
   } finally {
     btn.disabled = false;
@@ -328,28 +330,101 @@ function mostrarAvisos(lista, error = false) {
   caja.hidden = false;
 }
 
-async function abrirArchivo(archivo) {
-  if (!archivo) return;
+// ---------- Editor de la entrada de Psi4 ----------
+// El código se interpreta en el navegador con leerEntradaPsi4 y se envía como un cálculo
+// normal (molécula + opciones). Por seguridad, el servidor nunca ejecuta el texto del .in.
+const editor = { nombre: '', aplicado: null, clave: null };
+const textoEditor = () => $('#editorTexto').value;
+const editorAbierto = () => !$('#tarjetaEditor').hidden;
+// Mismo nombre de molécula que usa generarEntradaPsi4
+const nombreMolecula = (t) => String(t || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+const claveEntrada = (d) => `${d.xyz}|${d.carga}|${d.multiplicidad}`;
+
+function pintarLineas(lineaError = 0) {
+  const n = textoEditor().split('\n').length;
+  let html = '';
+  for (let i = 1; i <= n; i++) html += i === lineaError ? `<span class="err">${i}</span>\n` : `${i}\n`;
+  $('#editorLineas').innerHTML = html;
+  $('#editorLineas').scrollTop = $('#editorTexto').scrollTop;
+}
+
+// Los mensajes de error citan la línea problemática entre «…»: se busca su número
+function lineaDelError(mensaje) {
+  const citas = [...mensaje.matchAll(/«([^»]+)»/g)].map((m) => m[1].trim()).filter((c) => c.length > 1);
+  if (!citas.length) return 0;
+  const espacios = (t) => t.replace(/\s+/g, ' ').trim();
+  const cita = espacios(citas[citas.length - 1]); // la última cita es la línea completa
+  const lineas = textoEditor().split('\n').map(espacios);
+  const i = lineas.findIndex((l) => l.replace(/#.*$/, '').includes(cita));
+  return i >= 0 ? i + 1 : lineas.findIndex((l) => l.includes(cita)) + 1;
+}
+
+// ¿El formulario o el dibujo cambiaron después de aplicar el código?
+function formularioDistinto(d) {
+  return $('#metodo').value !== d.metodo || $('#base').value !== d.base || $('#tarea').value !== d.tarea
+    || parseInt($('#carga').value, 10) !== d.carga || parseInt($('#multiplicidad').value, 10) !== d.multiplicidad
+    || estado.modificada || !estado.geom || estado.geom.claveEntrada !== editor.clave;
+}
+
+function validarEditor() {
+  const caja = $('#editorEstado');
   try {
-    if (archivo.size > 300000) throw new Error('El archivo es demasiado grande (máx. 300 kB).');
-    const texto = await archivo.text();
-    const esXYZ = /\.xyz$/i.test(archivo.name);
-    const datos = esXYZ ? { ...leerXYZ(texto), carga: 0, multiplicidad: 1 } : leerEntradaPsi4(texto);
-    $('#infoMolecula').textContent = `Leyendo ${archivo.name}…`;
-    const g = await api('/api/geometria', {
+    const d = leerEntradaPsi4(textoEditor());
+    pintarLineas();
+    const natomos = d.xyz.trim().split('\n').length;
+    let pendiente = '';
+    if (textoEditor() !== editor.aplicado) pendiente = ' · <span class="pend">cambios sin aplicar (se aplican al ejecutar)</span>';
+    else if (formularioDistinto(d)) pendiente = ' · <span class="pend">el formulario o el dibujo cambiaron; al ejecutar se usará este código</span>';
+    caja.innerHTML = `<span class="ok">✓ Código válido</span> · ${natomos} átomos · carga ${d.carga} · multiplicidad ${d.multiplicidad} · ${esc(nombreDe('metodos', d.metodo))}/${esc(nombreDe('bases', d.base))} · ${esc(nombreDe('tareas', d.tarea))}${pendiente}`;
+    return d;
+  } catch (e) {
+    const linea = lineaDelError(e.message);
+    pintarLineas(linea);
+    caja.innerHTML = `<span class="mal">✗ ${linea ? `Línea ${linea}: ` : ''}</span>${esc(e.message)}`;
+    return null;
+  }
+}
+
+function abrirEditor(texto, nombre) {
+  editor.nombre = nombre;
+  editor.aplicado = null;
+  editor.clave = null;
+  $('#editorTexto').value = texto.replace(/\r\n/g, '\n');
+  $('#editorTexto').scrollTop = 0;
+  $('#nombreEditor').textContent = nombre;
+  $('#tarjetaEditor').hidden = false;
+  validarEditor();
+  $('#tarjetaEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+// El código del editor coincide con la molécula y el formulario actuales
+function marcarAplicado(texto, datos) {
+  editor.aplicado = texto;
+  editor.clave = claveEntrada(datos);
+  if (estado.geom) estado.geom.claveEntrada = editor.clave;
+  validarEditor();
+}
+
+// Lleva el código del editor a la molécula 3D, al dibujo y al formulario
+async function aplicarEditor(avisosExtra = []) {
+  const texto = textoEditor();
+  const datos = leerEntradaPsi4(texto);
+  const nombre = editor.nombre || 'entrada.in';
+  const clave = claveEntrada(datos);
+  let g = estado.geom;
+  const avisos = [...(datos.avisos || []), ...avisosExtra];
+  if (!g || estado.modificada || g.claveEntrada !== clave) {
+    $('#infoMolecula').textContent = `Leyendo ${nombre}…`;
+    g = await api('/api/geometria', {
       method: 'POST', body: JSON.stringify({ xyz: datos.xyz, carga: datos.carga, multiplicidad: datos.multiplicidad }),
     });
-    estado.geom = { ...g, archivo: archivo.name };
+    estado.geom = { ...g, archivo: nombre, claveEntrada: clave };
     estado.modificada = false;
     estado.resultado = null;
+    detenerVibracion();
     $('#barraVib').hidden = true;
     $('#ctrlCargas').hidden = true;
     $('#colorCargas').checked = false;
-    // Formulario con lo que dice el archivo
-    $('#titulo').value = datos.titulo || archivo.name.replace(/\.[^.]+$/, '');
-    $('#carga').value = datos.carga;
-    $('#multiplicidad').value = datos.multiplicidad;
-    if (!esXYZ) { $('#metodo').value = datos.metodo; $('#base').value = datos.base; $('#tarea').value = datos.tarea; }
     $('#smiles').value = g.smiles || '';
     // Dibujo 2D en JSME (sin marcar la estructura como modificada)
     if (g.mol2d && estado.jsme) {
@@ -358,36 +433,136 @@ async function abrirArchivo(archivo) {
     }
     prepararSuperficies([]);
     cargarModelo(g.molblock || datos.xyz, g.molblock ? 'sdf' : 'xyz');
-    $('#etiquetaModelo').textContent = `${g.formula} · geometría del archivo ${archivo.name}`;
-    const nivel = esXYZ ? 'elija método, base y tipo de cálculo' : `${nombreDe('metodos', datos.metodo)}/${nombreDe('bases', datos.base)} · ${nombreDe('tareas', datos.tarea)}`;
-    $('#infoMolecula').innerHTML = `<strong>${esc(archivo.name)}</strong>: ${esc(g.formula)} · ${g.natomos} átomos · ${g.electrones} electrones · carga ${datos.carga} · multiplicidad ${datos.multiplicidad} · ${esc(nivel)}`;
-    const avisos = [...(datos.avisos || [])];
+    $('#etiquetaModelo').textContent = `${g.formula} · geometría de ${nombre}`;
     if (g.aviso) avisos.push(g.aviso);
-    if (esXYZ) avisos.push('Un .xyz no indica carga ni multiplicidad: se suponen 0 y 1. Corríjalas en el formulario si hace falta.');
-    avisos.push('Se usarán las coordenadas del archivo tal cual. Si edita el dibujo, se generará una geometría nueva.');
-    mostrarAvisos(avisos);
-    actualizarEstimacion();
+  }
+  // Formulario con lo que dice el código (el título se conserva si corresponde a la misma molécula)
+  const tituloActual = $('#titulo').value.trim();
+  if (!tituloActual || nombreMolecula(tituloActual) !== datos.titulo) $('#titulo').value = datos.titulo || nombre.replace(/\.[^.]+$/, '');
+  $('#carga').value = datos.carga;
+  $('#multiplicidad').value = datos.multiplicidad;
+  $('#metodo').value = datos.metodo;
+  $('#base').value = datos.base;
+  $('#tarea').value = datos.tarea;
+  if (datos.mep) $('#mep').checked = true;
+  $('#infoMolecula').innerHTML = `<strong>${esc(nombre)}</strong>: ${esc(g.formula)} · ${g.natomos} átomos · ${g.electrones} electrones · carga ${datos.carga} · multiplicidad ${datos.multiplicidad} · ${esc(nombreDe('metodos', datos.metodo))}/${esc(nombreDe('bases', datos.base))} · ${esc(nombreDe('tareas', datos.tarea))}`;
+  avisos.push('Se usan las coordenadas del código tal cual. Si edita el dibujo, se generará una geometría nueva.');
+  mostrarAvisos(avisos);
+  actualizarEstimacion();
+  marcarAplicado(texto, datos);
+  return datos;
+}
+
+async function abrirArchivo(archivo) {
+  if (!archivo) return;
+  try {
+    if (archivo.size > 300000) throw new Error('El archivo es demasiado grande (máx. 300 kB).');
+    let texto = await archivo.text();
+    let nombre = archivo.name;
+    const extra = [];
+    if (/\.xyz$/i.test(nombre)) {
+      // Un .xyz sólo trae coordenadas: se arma una entrada con las opciones del formulario
+      const x = leerXYZ(texto);
+      nombre = nombre.replace(/\.xyz$/i, '.in');
+      texto = generarEntradaPsi4({
+        titulo: x.titulo || archivo.name.replace(/\.[^.]+$/, ''), xyz: x.xyz, carga: 0, multiplicidad: 1,
+        metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: $('#tarea').value || 'energia',
+        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked,
+      });
+      extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
+    }
+    abrirEditor(texto, nombre);
+    await aplicarEditor(extra);
   } catch (e) {
-    mostrarAvisos([`No se pudo leer ${archivo.name}: ${e.message}`], true);
+    mostrarAvisos([`No se pudo usar ${archivo.name}: ${e.message}`, ...(editorAbierto() ? ['Corrija el código en el editor «Entrada de Psi4» y pulse «Aplicar cambios» o «Ejecutar cálculo».'] : [])], true);
     $('#infoMolecula').textContent = 'El archivo no se pudo usar.';
   } finally {
     $('#archivoEntrada').value = '';
   }
 }
 
-async function guardarEntradaActual() {
+// Entrada .in con la molécula del visor y las opciones del formulario
+async function entradaDesdeFormulario() {
+  if (estado.modificada || !estado.geom) await generar3D();
+  const g = estado.geom;
+  const titulo = $('#titulo').value.trim() || g.formula || 'molecula';
+  const texto = generarEntradaPsi4({
+    titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
+    metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
+    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked,
+  });
+  return { texto, nombre: `${nombreSeguro(titulo)}.in` };
+}
+
+async function verEntradaActual() {
   try {
-    if (estado.modificada || !estado.geom) await generar3D();
-    const g = estado.geom;
-    const titulo = $('#titulo').value.trim() || g.formula || 'molecula';
-    const texto = generarEntradaPsi4({
-      titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
-      metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
-      memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked,
-    });
-    descargar(texto, `${nombreSeguro(titulo)}.in`);
+    // Si el editor ya tiene código sin aplicar, o coincide con lo actual, se muestra tal cual
+    if (textoEditor() && editor.aplicado !== null) {
+      const d = (() => { try { return leerEntradaPsi4(textoEditor()); } catch { return null; } })();
+      if (textoEditor() !== editor.aplicado || (d && !formularioDistinto(d))) {
+        $('#tarjetaEditor').hidden = false;
+        validarEditor();
+        $('#tarjetaEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        return;
+      }
+    }
+    const { texto, nombre } = await entradaDesdeFormulario();
+    abrirEditor(texto, nombre);
+    marcarAplicado(texto, leerEntradaPsi4(texto));
   } catch (e) {
     alert(e.message);
+  }
+}
+
+async function regenerarEditor() {
+  if (textoEditor() !== editor.aplicado && !confirm('El código tiene cambios sin aplicar. ¿Reemplazarlo con la molécula y las opciones del formulario?')) return;
+  try {
+    const { texto } = await entradaDesdeFormulario();
+    const nombre = editor.nombre;
+    abrirEditor(texto, nombre || `${nombreSeguro($('#titulo').value)}.in`);
+    marcarAplicado(texto, leerEntradaPsi4(texto));
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function aplicarDesdeEditor(boton) {
+  if (!validarEditor()) { $('#editorTexto').focus(); return false; }
+  boton.disabled = true;
+  try {
+    await aplicarEditor();
+    return true;
+  } catch (e) {
+    validarEditor();
+    alert(e.message);
+    return false;
+  } finally {
+    boton.disabled = false;
+  }
+}
+
+async function ejecutarEditor() {
+  const boton = $('#editorEjecutar');
+  if (boton.disabled) return;
+  if (!(await aplicarDesdeEditor(boton))) return;
+  boton.disabled = true;
+  try {
+    await lanzarCalculo();
+    $('#seccionResultados').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    boton.disabled = false;
+  }
+}
+
+function teclasEditor(e) {
+  const ta = e.target;
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ejecutarEditor(); return; }
+  if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.ctrlKey) {
+    e.preventDefault();
+    ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
+    ta.dispatchEvent(new Event('input'));
   }
 }
 
@@ -421,23 +596,29 @@ async function guardarArchivoTrabajo(cual) {
 }
 
 // ---------- Cálculos ----------
+// Envía al servidor la molécula del visor con las opciones del formulario
+async function lanzarCalculo() {
+  if (estado.modificada || !estado.geom) await generar3D();
+  const g = estado.geom;
+  const cuerpo = {
+    xyz: g.xyz, formula: g.formula, smiles: g.smiles,
+    titulo: $('#titulo').value.trim() || g.formula,
+    metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
+    carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
+    mep: $('#mep').checked,
+  };
+  const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
+  guardarEnHistorial(t);
+  seguir(t.id);
+  return t;
+}
+
 async function calcular(ev) {
   ev.preventDefault();
   const btn = $('#calcular');
   btn.disabled = true;
   try {
-    if (estado.modificada || !estado.geom) await generar3D();
-    const g = estado.geom;
-    const cuerpo = {
-      xyz: g.xyz, formula: g.formula, smiles: g.smiles,
-      titulo: $('#titulo').value.trim() || g.formula,
-      metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
-      carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
-      mep: $('#mep').checked,
-    };
-    const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
-    guardarEnHistorial(t);
-    seguir(t.id);
+    await lanzarCalculo();
   } catch (e) {
     alert(e.message);
   } finally {
@@ -1092,7 +1273,19 @@ function eventos() {
   $('#smiles').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#leerSmiles').click(); } });
   $('#generar3d').addEventListener('click', () => generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; }));
   $('#formCalculo').addEventListener('submit', calcular);
-  $('#guardarEntrada').addEventListener('click', guardarEntradaActual);
+  $('#verEntrada').addEventListener('click', verEntradaActual);
+  // Editor de la entrada
+  const ta = $('#editorTexto');
+  let temporizador = null;
+  ta.addEventListener('input', () => { pintarLineas(); clearTimeout(temporizador); temporizador = setTimeout(validarEditor, 250); });
+  ta.addEventListener('scroll', () => { $('#editorLineas').scrollTop = ta.scrollTop; });
+  ta.addEventListener('keydown', teclasEditor);
+  $('#editorAplicar').addEventListener('click', (e) => aplicarDesdeEditor(e.currentTarget));
+  $('#editorEjecutar').addEventListener('click', ejecutarEditor);
+  $('#editorDesdeForm').addEventListener('click', regenerarEditor);
+  $('#editorGuardar').addEventListener('click', () => descargar(textoEditor(), editor.nombre || `${nombreSeguro($('#titulo').value)}.in`));
+  $('#editorCerrar').addEventListener('click', () => { $('#tarjetaEditor').hidden = true; });
+  $('#formCalculo').addEventListener('change', () => { if (editorAbierto()) validarEditor(); });
   $('#abrirArchivo').addEventListener('click', () => $('#archivoEntrada').click());
   $('#archivoEntrada').addEventListener('change', (e) => abrirArchivo(e.target.files[0]));
   const tarjeta = $('#tarjetaMolecula');

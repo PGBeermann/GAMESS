@@ -47,12 +47,12 @@
   const aNumero = (t) => parseFloat(String(t).replace(/[dD]/, 'e'));
 
   function simboloDe(etiqueta) {
-    const m = /^([A-Za-z]{1,2})/.exec(etiqueta);
+    // Como en Psi4: símbolo del elemento, opcionalmente seguido de números o de _sufijo (C1, H_a)
+    const m = /^([A-Za-z]{1,2})(?:\d+|_\w*)?$/.exec(etiqueta);
     if (!m) return null;
     const s = m[1].charAt(0).toUpperCase() + m[1].slice(1).toLowerCase();
     if (ELEMENTOS.has(s)) return s;
-    const uno = s.charAt(0);
-    return ELEMENTOS.has(uno) ? uno : (s === 'X' || uno === 'X' ? 'X' : null);
+    return s === 'X' ? 'X' : null;
   }
 
   // ---- Geometría: cartesianas o matriz Z ----
@@ -86,8 +86,9 @@
     };
     for (const linea of lineasAtomos) {
       const t = linea.split(/[\s,]+/).filter(Boolean);
+      if (/^(gh\(|@)/i.test(t[0])) throw new Error(`Los átomos fantasma no se admiten: «${linea}»`);
       const sim = simboloDe(t[0]);
-      if (!sim || /^(gh|@)/i.test(t[0])) throw new Error(`Átomo no reconocido (los átomos fantasma no se admiten): «${linea}»`);
+      if (!sim) throw new Error(`Elemento «${t[0]}» no reconocido en: «${linea}»`);
       let p;
       if (t.length === 4) {
         p = [valor(t[1], linea), valor(t[2], linea), valor(t[3], linea)].map((v) => v * factor);
@@ -193,6 +194,7 @@
     if (ignoradas.length) avisos.push(`Opciones ignoradas: ${ignoradas.slice(0, 6).join('; ')}${ignoradas.length > 6 ? '…' : ''}`);
     return {
       titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos,
+      mep: /\bcubeprop\s*\(/i.test(sinBloques),
     };
   }
 

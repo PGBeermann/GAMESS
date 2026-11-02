@@ -109,6 +109,28 @@
       </div>
     </section>
 
+    <section class="tarjeta ancho" aria-labelledby="tEditor" id="tarjetaEditor" hidden>
+      <div class="tarjeta-cab">
+        <h2 id="tEditor"><span class="paso">.in</span> Entrada de Psi4 <span class="nombre-archivo" id="nombreEditor"></span></h2>
+        <div class="grupo-btn">
+          <button class="btn sec chico" id="editorDesdeForm" type="button" title="Reescribe el código con la molécula del visor y las opciones del formulario">Regenerar desde el formulario</button>
+          <button class="btn sec chico" id="editorGuardar" type="button" title="Descarga este código como archivo .in">Guardar .in</button>
+          <button class="btn sec chico" id="editorCerrar" type="button" title="Cerrar el editor">Cerrar</button>
+        </div>
+      </div>
+      <div class="editor">
+        <pre class="editor-lineas" id="editorLineas" aria-hidden="true"></pre>
+        <textarea id="editorTexto" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-label="Código de la entrada de Psi4" aria-describedby="editorEstado"></textarea>
+      </div>
+      <div class="editor-estado" id="editorEstado" role="status"></div>
+      <div class="acciones">
+        <span class="info">Edite el código y ejecútelo. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> también ejecuta.</span>
+        <span class="espaciador"></span>
+        <button class="btn sec" id="editorAplicar" type="button" title="Actualiza la molécula 3D y el formulario con este código, sin calcular">Aplicar cambios</button>
+        <button class="btn grande" id="editorEjecutar" type="button">▶ Ejecutar cálculo</button>
+      </div>
+    </section>
+
     <section class="tarjeta ancho" aria-labelledby="t3">
       <div class="tarjeta-cab">
         <h2 id="t3"><span class="paso">2</span> Configure el cálculo Psi4</h2>
@@ -135,7 +157,7 @@
         <label class="chk largo"><input type="checkbox" id="mep" checked> Calcular potencial electrostático (MEP)</label>
         <div class="acciones fin">
           <span class="info" id="estimacion"></span>
-          <button class="btn sec" id="guardarEntrada" type="button" title="Descarga el archivo .in de Psi4 con esta molécula y estas opciones">Guardar entrada (.in)</button>
+          <button class="btn sec" id="verEntrada" type="button" title="Muestra el archivo .in de Psi4 con esta molécula y estas opciones, para revisarlo, editarlo o guardarlo">Ver / editar entrada (.in)</button>
           <button class="btn grande" id="calcular" type="submit">Calcular con Psi4</button>
         </div>
       </form>
