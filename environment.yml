@@ -1,0 +1,10 @@
+# Entorno conda que usa el Dockerfile (también sirve para instalar en local con micromamba/conda)
+name: psi4web
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - psi4=1.11
+  - rdkit
+  - numpy
+  - nodejs=22

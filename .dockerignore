@@ -1,0 +1,8 @@
+node_modules
+datos
+.git
+.gitignore
+*.md
+!README.md
+Dockerfile
+.dockerignore

@@ -1,0 +1,799 @@
+/* Interfaz: JSME (dibujo 2D) + 3Dmol.js (visor 3D) + API Psi4 del servidor */
+'use strict';
+
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+const esc = (t) => String(t ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const fx = (v, d = 4) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(d));
+const HARTREE_KCAL = 627.5094740631;
+const HARTREE_EV = 27.211386245988;
+const LS_CLAVE = 'psi4_clave';
+const LS_HIST = 'psi4_historial';
+
+const EJEMPLOS = [
+  ['Agua', 'O'], ['Metano', 'C'], ['Amoníaco', 'N'], ['Formaldehído', 'C=O'], ['Etileno', 'C=C'],
+  ['Acetileno', 'C#C'], ['Metanol', 'CO'], ['Etanol', 'CCO'], ['Acetona', 'CC(C)=O'],
+  ['Ácido acético', 'CC(=O)O'], ['Ion acetato', 'CC(=O)[O-]'], ['Acetonitrilo', 'CC#N'],
+  ['Urea', 'NC(N)=O'], ['Glicina', 'NCC(=O)O'], ['Benceno', 'c1ccccc1'], ['Fenol', 'Oc1ccccc1'],
+  ['Piridina', 'c1ccncc1'], ['Anilina', 'Nc1ccccc1'], ['Butadieno', 'C=CC=C'], ['Radical metilo', '[CH3]'],
+];
+
+const estado = {
+  opciones: null, geom: null, modificada: true, jsme: null, visor: null,
+  trabajo: null, resultado: null, token: 0, reloj: null, inicio: null,
+  modelo: null, cubos: new Map(), reproductor: null, girando: false, modoActivo: null,
+};
+
+// ---------- Utilidades ----------
+function leerLS(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } }
+function escribirLS(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch { /* sin almacenamiento */ } }
+
+async function api(ruta, opciones = {}) {
+  const headers = { ...(opciones.body ? { 'Content-Type': 'application/json' } : {}) };
+  const clave = leerLS(LS_CLAVE, '');
+  if (clave) headers['x-clave-acceso'] = clave;
+  const r = await fetch(ruta, { ...opciones, headers });
+  const tipo = r.headers.get('content-type') || '';
+  const datos = tipo.includes('json') ? await r.json() : await r.text();
+  if (!r.ok) {
+    if (r.status === 401) $('#panelClave').hidden = false;
+    const e = new Error((datos && datos.error) || `Error ${r.status}`);
+    e.status = r.status;
+    throw e;
+  }
+  return datos;
+}
+
+function descargar(contenido, nombre, tipo = 'text/plain') {
+  const url = contenido.startsWith?.('data:') ? contenido : URL.createObjectURL(new Blob([contenido], { type: tipo }));
+  const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
+  document.body.appendChild(a); a.click(); a.remove();
+  if (!url.startsWith('data:')) setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+const nombreDe = (lista, id) => (estado.opciones?.[lista].find((x) => x.id === id) || {}).nombre || id;
+const varCSS = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// ---------- Opciones del servidor ----------
+async function cargarOpciones() {
+  const sel = (id, lista, def) => {
+    $(id).innerHTML = lista.map((o) => `<option value="${esc(o.id)}">${esc(o.nombre)}${o.tipo ? ` — ${esc(o.tipo)}` : ''}</option>`).join('');
+    $(id).value = def;
+  };
+  try {
+    const o = await api('/api/opciones');
+    estado.opciones = o;
+    sel('#metodo', o.metodos, 'b3lyp');
+    sel('#base', o.bases, '6-31g*');
+    sel('#tarea', o.tareas, 'optimizacion');
+    const es = $('#estadoServidor');
+    es.textContent = o.psi4 ? `Psi4 ${o.psi4} · ${o.hilos} hilos` : 'Servidor activo (Psi4 cargando…)';
+    es.className = 'estado-servidor ok';
+    $('#versionPsi4').textContent = o.psi4 ? ` · Psi4 ${o.psi4}` : '';
+    if (o.requiere_clave && !leerLS(LS_CLAVE, '')) $('#panelClave').hidden = false;
+    if (!o.psi4) setTimeout(cargarOpciones, 8000);
+    pintarHistorial();
+    actualizarEstimacion();
+  } catch (e) {
+    $('#estadoServidor').textContent = 'Sin conexión con el servidor';
+    $('#estadoServidor').className = 'estado-servidor mal';
+    setTimeout(cargarOpciones, 5000);
+  }
+}
+
+function actualizarEstimacion() {
+  const n = estado.geom?.natomos;
+  const pesados = estado.geom ? estado.geom.xyz.split('\n').filter((l) => !/^H\s/.test(l)).length : null;
+  const base = $('#base').value; const metodo = $('#metodo').value; const tarea = $('#tarea').value;
+  const fb = { 'sto-3g': 0.3, '3-21g': 0.5, '6-31g': 0.7, '6-31g*': 1, '6-31g**': 1.3, '6-31+g*': 1.6, '6-311g**': 2, 'cc-pvdz': 1.3, 'aug-cc-pvdz': 4, 'def2-svp': 1.2, 'def2-tzvp': 5 }[base] || 1;
+  const fm = { hf: 0.6, mp2: 3 }[metodo] || 1;
+  // Hessiano analítico para HF; para DFT/MP2 Psi4 usa diferencias finitas de gradientes (~2 por coordenada)
+  const ft = { energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1) }[tarea] || 1;
+  if (!pesados) { $('#estimacion').textContent = ''; return; }
+  const seg = 0.04 * Math.pow(Math.max(pesados, 1), 3) * fb * fm * ft; // segundos aproximados con 4 hilos
+  const nivel = seg < 40 ? 'rápido (segundos)' : seg < 240 ? 'moderado (1–4 min)' : seg < 1200 ? 'lento (4–20 min)' : 'muy lento: considere una base más pequeña o «Energía»';
+  $('#estimacion').textContent = `${n} átomos (${pesados} pesados) · tiempo estimado: ${nivel}`;
+}
+
+// ---------- JSME ----------
+window.jsmeOnLoad = function jsmeOnLoad() {
+  const caja = $('#jsme');
+  caja.innerHTML = '';
+  estado.jsme = new JSApplet.JSME('jsme', `${caja.clientWidth}px`, `${caja.clientHeight}px`, { options: 'polarnitro' });
+  estado.jsme.setCallBack('AfterStructureModified', () => { estado.modificada = true; });
+  leerEnJSME('CCO');
+  $('#titulo').value = 'Etanol';
+  generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; });
+  let pendiente;
+  window.addEventListener('resize', () => {
+    clearTimeout(pendiente);
+    pendiente = setTimeout(() => estado.jsme.setSize(`${caja.clientWidth}px`, `${caja.clientHeight}px`), 150);
+  });
+};
+
+function leerEnJSME(texto) {
+  if (!estado.jsme) return;
+  try { estado.jsme.readGenericMolecularInput(texto); } catch { estado.jsme.readMolecule?.(texto); }
+  estado.modificada = true;
+}
+
+setTimeout(() => {
+  if (!estado.jsme) $('#jsme').innerHTML = '<p class="cargando">El editor JSME no cargó. Recargue la página o use la casilla SMILES.</p>';
+}, 15000);
+
+// ---------- Visor 3D ----------
+function iniciarVisor() {
+  estado.visor = $3Dmol.createViewer($('#visor'), { backgroundColor: varCSS('--visor') || 'white', antialias: true });
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  mq.addEventListener?.('change', () => { estado.visor.setBackgroundColor(varCSS('--visor')); estado.visor.render(); });
+}
+
+function colorCarga(q) {
+  // rojo (negativa) → blanco → azul (positiva), saturando en ±0.6 e
+  const t = Math.max(-1, Math.min(1, q / 0.6));
+  const a = Math.round(255 * (1 - Math.abs(t)));
+  return t < 0 ? (0xff << 16) | (a << 8) | a : (a << 16) | (a << 8) | 0xff;
+}
+
+function estiloActual() {
+  const cargas = $('#colorCargas').checked && estado.resultado?.cargas_mulliken;
+  const c = cargas ? { colorfunc: (at) => colorCarga(cargas[at.index]?.carga ?? 0) } : { colorscheme: 'Jmol' };
+  return {
+    bolas: { stick: { radius: 0.12, ...c }, sphere: { scale: 0.27, ...c } },
+    varillas: { stick: { radius: 0.16, ...c } },
+    esferas: { sphere: { scale: 1.0, ...c } },
+    lineas: { line: { linewidth: 2, ...c } },
+  }[$('#estilo').value];
+}
+
+function ponerEtiquetas() {
+  const v = estado.visor;
+  v.removeAllLabels();
+  if (!$('#etiquetas').checked || !v.getModel()) return;
+  const cargas = estado.resultado?.cargas_mulliken;
+  const conCarga = $('#colorCargas').checked && cargas;
+  v.getModel().selectedAtoms({}).forEach((a, i) => {
+    const txt = conCarga ? `${a.elem}${i + 1} ${cargas[i].carga >= 0 ? '+' : ''}${cargas[i].carga.toFixed(2)}` : `${a.elem}${i + 1}`;
+    v.addLabel(txt, { position: { x: a.x, y: a.y, z: a.z }, fontSize: 11, fontColor: 'black', backgroundColor: 'white', backgroundOpacity: 0.7, inFront: true, alignment: 'center' });
+  });
+}
+
+function aplicarEstilo() {
+  const v = estado.visor;
+  if (!v.getModel()) return;
+  v.setStyle({}, estiloActual());
+  ponerEtiquetas();
+  v.render();
+}
+
+function detenerAnimacion() {
+  estado.visor.stopAnimate();
+  clearInterval(estado.reproductor);
+  estado.reproductor = null;
+  estado.modoActivo = null;
+  $$('.barra.activa').forEach((b) => b.classList.remove('activa'));
+  $$('tr.activa').forEach((r) => r.classList.remove('activa'));
+}
+
+// 3Dmol exige el formato XYZ completo: n.º de átomos, línea de comentario y coordenadas
+function xyzCompleto(texto) {
+  const lineas = String(texto).trim().split(/\r?\n/);
+  return /^\s*\d+\s*$/.test(lineas[0]) ? texto : `${lineas.length}\nmolecula\n${lineas.join('\n')}\n`;
+}
+
+function cargarModelo(datos, formato, { zoom = true } = {}) {
+  if (formato === 'xyz') datos = xyzCompleto(datos);
+  detenerAnimacion();
+  const v = estado.visor;
+  v.removeAllModels();
+  v.removeAllLabels();
+  v.addModel(datos, formato);
+  estado.modelo = { datos, formato };
+  aplicarEstilo();
+  if (zoom) v.zoomTo();
+  v.render();
+}
+
+async function volumen(nombre) {
+  const id = estado.trabajo;
+  const k = `${id}/${nombre}`;
+  if (!estado.cubos.has(k)) {
+    const texto = await api(`/api/calculos/${id}/archivo/${nombre}.cube`);
+    estado.cubos.set(k, new $3Dmol.VolumeData(texto, 'cube'));
+  }
+  return estado.cubos.get(k);
+}
+
+async function mostrarSuperficie() {
+  const v = estado.visor;
+  const tipo = $('#superficie').value;
+  v.removeAllShapes();
+  const ley = $('#leyenda');
+  const ctrl = $('#ctrlIso');
+  const iso = parseFloat($('#isovalor').value);
+  $('#isoSalida').textContent = iso.toFixed(3);
+  ley.hidden = true;
+  ctrl.hidden = tipo === 'ninguna';
+  if (tipo === 'ninguna') { v.render(); return; }
+  $('#etiquetaModelo').textContent = 'cargando superficie…';
+  try {
+    if (tipo === 'homo' || tipo === 'lumo') {
+      $('#isoTexto').textContent = 'Isovalor';
+      const vol = await volumen(tipo);
+      v.addIsosurface(vol, { isoval: iso, color: '#2b5cd7', opacity: 0.85, smoothness: 3 });
+      v.addIsosurface(vol, { isoval: -iso, color: '#d7191c', opacity: 0.85, smoothness: 3 });
+      const o = estado.resultado.orbitales;
+      const e = tipo === 'homo' ? o.homo_ev : o.lumo_ev;
+      ley.innerHTML = `<strong>${tipo.toUpperCase()}</strong> · ${fx(e, 3)} eV<br><span style="color:#2b5cd7">■</span> fase + &nbsp; <span style="color:#d7191c">■</span> fase −`;
+    } else if (tipo === 'mep') {
+      $('#isoTexto').textContent = 'Escala ±';
+      const [dens, esp] = await Promise.all([volumen('densidad'), volumen('mep')]);
+      v.addIsosurface(dens, { isoval: 0.002, voldata: esp, volscheme: new $3Dmol.Gradient.RWB(-iso, iso), opacity: 0.8, smoothness: 2 });
+      const kcal = (iso * HARTREE_KCAL).toFixed(1);
+      ley.innerHTML = `<strong>Potencial electrostático</strong> (isodensidad 0.002 u.a.)<div class="degradado"></div><div class="extremos"><span>−${kcal}</span><span>0</span><span>+${kcal} kcal/mol</span></div>rojo: rico en electrones · azul: pobre`;
+    }
+    ley.hidden = false;
+  } catch (e) {
+    ley.innerHTML = `No se pudo cargar la superficie: ${esc(e.message)}`;
+    ley.hidden = false;
+  }
+  etiquetaModeloResultado();
+  v.render();
+}
+
+function prepararSuperficies(cubos = []) {
+  const opciones = [['ninguna', 'Ninguna']];
+  if (cubos.includes('homo')) opciones.push(['homo', 'Orbital HOMO']);
+  if (cubos.includes('lumo')) opciones.push(['lumo', 'Orbital LUMO']);
+  if (cubos.includes('mep') && cubos.includes('densidad')) opciones.push(['mep', 'Potencial electrostático (MEP)']);
+  $('#superficie').innerHTML = opciones.map(([v, t]) => `<option value="${v}">${t}</option>`).join('');
+  $('#superficie').value = 'ninguna';
+  $('#ctrlIso').hidden = true;
+  $('#leyenda').hidden = true;
+  estado.visor.removeAllShapes();
+}
+
+function ajustarDeslizador() {
+  const tipo = $('#superficie').value;
+  const s = $('#isovalor');
+  if (tipo === 'mep') { s.min = 0.01; s.max = 0.15; s.step = 0.005; s.value = 0.05; } else { s.min = 0.01; s.max = 0.12; s.step = 0.005; s.value = 0.05; }
+}
+
+// ---------- Geometría 3D (RDKit en el servidor) ----------
+// JSME lee algunas entradas de forma diferida: se espera hasta 2 s a que haya estructura.
+async function esperarEstructura() {
+  for (let i = 0; i < 20; i++) {
+    const s = estado.jsme.smiles();
+    if (s) return s;
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return '';
+}
+
+async function generar3D() {
+  if (!estado.jsme) throw new Error('El editor JSME aún no está listo.');
+  const smiles = await esperarEstructura();
+  const molfile = estado.jsme.molFile();
+  if (!smiles) throw new Error('El editor está vacío: dibuje una molécula.');
+  const btn = $('#generar3d');
+  btn.disabled = true;
+  $('#infoMolecula').textContent = 'Generando geometría 3D…';
+  try {
+    const g = await api('/api/geometria', { method: 'POST', body: JSON.stringify({ molfile, smiles }) });
+    estado.geom = g;
+    estado.modificada = false;
+    estado.resultado = null;
+    $('#ctrlCargas').hidden = true;
+    $('#colorCargas').checked = false;
+    $('#carga').value = g.carga;
+    $('#multiplicidad').value = g.multiplicidad;
+    $('#smiles').value = g.smiles;
+    $('#infoMolecula').innerHTML = `<strong>${esc(g.formula)}</strong> · ${g.natomos} átomos · ${g.electrones} electrones · ${g.masa} uma · geometría inicial ${esc(g.campo_fuerza)}`;
+    prepararSuperficies([]);
+    cargarModelo(g.molblock, 'sdf');
+    $('#etiquetaModelo').textContent = `${g.formula} · geometría inicial (${g.campo_fuerza})`;
+    actualizarEstimacion();
+    return g;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---------- Cálculos ----------
+async function calcular(ev) {
+  ev.preventDefault();
+  const btn = $('#calcular');
+  btn.disabled = true;
+  try {
+    if (estado.modificada || !estado.geom) await generar3D();
+    const g = estado.geom;
+    const cuerpo = {
+      xyz: g.xyz, formula: g.formula, smiles: g.smiles,
+      titulo: $('#titulo').value.trim() || g.formula,
+      metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
+      carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
+      mep: $('#mep').checked,
+    };
+    const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
+    guardarEnHistorial(t);
+    seguir(t.id);
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function pildora(t) {
+  const p = $('#pildoraEstado');
+  const txt = { en_cola: t.posicion_cola ? `En cola (#${t.posicion_cola})` : 'En cola', ejecutando: 'Calculando', terminado: 'Terminado', error: 'Error' }[t.estado];
+  p.textContent = txt;
+  p.className = `pildora ${t.estado === 'error' ? 'error' : t.estado === 'en_cola' ? 'cola' : ''}`;
+}
+
+function cronometro() {
+  if (!estado.inicio) { $('#cronometro').textContent = 'esperando turno'; return; }
+  const s = Math.max(0, Math.round((Date.now() - estado.inicio) / 1000));
+  $('#cronometro').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function seguir(id) {
+  const token = ++estado.token;
+  estado.trabajo = id;
+  estado.resultado = null;
+  const sec = $('#seccionResultados');
+  sec.hidden = false;
+  $('#resultados').hidden = true;
+  $('#errorCalculo').hidden = true;
+  $('#progreso').hidden = false;
+  $('#registro').textContent = '';
+  $('#etapa').textContent = 'Consultando…';
+  clearInterval(estado.reloj);
+  estado.inicio = null;
+  estado.reloj = setInterval(cronometro, 1000);
+  sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  const ciclo = async () => {
+    if (token !== estado.token) return;
+    let t;
+    try {
+      t = await api(`/api/calculos/${id}`);
+    } catch (e) {
+      if (e.status === 404) { finSeguimiento(); mostrarError({ error: e.message }); quitarDelHistorial(id); return; }
+      setTimeout(ciclo, 5000);
+      return;
+    }
+    if (token !== estado.token) return;
+    pildora(t);
+    actualizarHistorial(t);
+    $('#cancelar').hidden = !(t.estado === 'en_cola' || t.estado === 'ejecutando');
+    if (t.estado === 'en_cola' || t.estado === 'ejecutando') {
+      estado.inicio = t.inicio ? Date.parse(t.inicio) : null;
+      $('#etapa').textContent = t.estado === 'en_cola' ? `En cola${t.posicion_cola ? ` (posición ${t.posicion_cola})` : ''}` : (t.etapa || 'Calculando');
+      if (t.registro) {
+        const pre = $('#registro');
+        const abajo = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
+        pre.textContent = t.registro;
+        if (abajo) pre.scrollTop = pre.scrollHeight;
+      }
+      cronometro();
+      setTimeout(ciclo, 2000);
+    } else {
+      finSeguimiento();
+      if (t.estado === 'terminado' && t.resultado) mostrarResultado(t);
+      else mostrarError(t);
+    }
+  };
+  ciclo();
+}
+
+function finSeguimiento() {
+  clearInterval(estado.reloj);
+  $('#progreso').hidden = true;
+  $('#cancelar').hidden = true;
+}
+
+function mostrarError(t) {
+  const caja = $('#errorCalculo');
+  caja.hidden = false;
+  caja.innerHTML = `<strong>El cálculo no terminó.</strong>\n${esc(t.error || t.resultado?.error || 'Error desconocido.')}` +
+    (t.registro ? `<details><summary>Últimas líneas de la salida de Psi4</summary><pre class="registro">${esc(t.registro)}</pre></details>` : '');
+  pildora({ estado: 'error' });
+}
+
+// ---------- Resultados ----------
+function etiquetaModeloResultado() {
+  const t = estado.infoTrabajo;
+  if (!t) return;
+  const tipo = t.tarea === 'energia' ? 'geometría de entrada' : 'geometría optimizada';
+  $('#etiquetaModelo').textContent = `${t.titulo} · ${nombreDe('metodos', t.metodo)}/${nombreDe('bases', t.base)} · ${tipo}`;
+}
+
+function mostrarResultado(t) {
+  const r = t.resultado;
+  estado.resultado = r;
+  estado.infoTrabajo = t;
+  $('#resultados').hidden = false;
+  $('#errorCalculo').hidden = true;
+  pildora(t);
+
+  prepararSuperficies(r.cubos || []);
+  cargarModelo(r.geometria_xyz, 'xyz');
+  etiquetaModeloResultado();
+  $('#ctrlCargas').hidden = !r.cargas_mulliken;
+
+  panelResumen(t, r);
+  panelOrbitales(r);
+  panelCargas(r);
+  panelVibraciones(r);
+  panelOptimizacion(r);
+  panelArchivos(t, r);
+  $('#tabVib').disabled = !r.frecuencias;
+  $('#tabOpt').disabled = !(r.trayectoria && r.trayectoria.length);
+  abrirPestana('resumen');
+}
+
+function abrirPestana(nombre) {
+  $$('.pestanas button').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.pestana === nombre)));
+  $$('.panel').forEach((p) => { p.hidden = p.dataset.panel !== nombre; });
+}
+
+function cifra(nombre, valor, extra = '') {
+  return `<div class="cifra"><div class="nombre">${nombre}</div><div class="valor">${valor}</div>${extra ? `<div class="extra">${extra}</div>` : ''}</div>`;
+}
+
+function panelResumen(t, r) {
+  const e = r.energia || {};
+  const d = r.dipolo_debye;
+  const o = r.orbitales || {};
+  const f = r.frecuencias;
+  const th = f?.termoquimica_hartree;
+  let html = '<div class="cifras">';
+  html += cifra('Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  if (d) html += cifra('Momento dipolar', `${fx(d.total, 3)} D`, `x ${fx(d.x, 3)} · y ${fx(d.y, 3)} · z ${fx(d.z, 3)}`);
+  if (o.homo_ev != null) html += cifra('HOMO / LUMO', `${fx(o.homo_ev, 3)} / ${fx(o.lumo_ev, 3)} eV`, o.gap_ev != null ? `Brecha HOMO–LUMO: ${fx(o.gap_ev, 3)} eV` : '');
+  if (f) html += cifra('Frecuencias imaginarias', String(f.n_imaginarias), f.n_imaginarias ? 'No es un mínimo: revise la geometría' : 'Mínimo de energía confirmado');
+  if (th?.zpve != null) html += cifra('Energía de punto cero', `${fx(th.zpve * HARTREE_KCAL, 2)} kcal/mol`, `${fx(th.zpve, 6)} E<sub>h</sub>`);
+  if (th?.entalpia != null) html += cifra('Entalpía H (298 K)', `${fx(th.entalpia, 6)} E<sub>h</sub>`);
+  if (th?.energia_libre_gibbs != null) html += cifra('Energía libre G (298 K)', `${fx(th.energia_libre_gibbs, 6)} E<sub>h</sub>`);
+  html += cifra('Nivel de teoría', `${esc(nombreDe('metodos', r.metodo))}/${esc(nombreDe('bases', r.base))}`, `${esc(nombreDe('tareas', r.tarea))}`);
+  html += cifra('Sistema', `${esc(t.formula || '')}`, `carga ${r.carga} · multiplicidad ${r.multiplicidad} · ${o.n_funciones_base ?? '?'} funciones de base`);
+  html += cifra('Tiempo de cálculo', `${fx(r.tiempo_s, 1)} s`, `Psi4 ${esc(r.psi4_version || '')}`);
+  html += '</div>';
+  const comp = e.componentes || {};
+  if (Object.keys(comp).length) {
+    html += '<table><thead><tr><th>Componente de energía</th><th class="num">E<sub>h</sub></th></tr></thead><tbody>';
+    const nombres = { repulsion_nuclear: 'Repulsión nuclear', scf_total: 'Energía SCF total', correlacion_mp2: 'Correlación MP2' };
+    for (const [k, v] of Object.entries(comp)) html += `<tr><td>${nombres[k] || esc(k)}</td><td class="num">${fx(v, 8)}</td></tr>`;
+    html += '</tbody></table>';
+  }
+  for (const n of [r.aviso, r.nota_propiedades, r.aviso_cubos, r.aviso_propiedades]) if (n) html += `<p class="nota">${esc(n)}</p>`;
+  $('[data-panel="resumen"]').innerHTML = html;
+}
+
+function panelOrbitales(r) {
+  const o = r.orbitales;
+  const panel = $('[data-panel="orbitales"]');
+  if (!o) { panel.innerHTML = '<p class="nota">Sin información de orbitales.</p>'; return; }
+  const lista = o.lista;
+  const W = 260; const H = 360; const m = 30;
+  const es = lista.map((x) => x.energia_ev);
+  const min = Math.min(...es); const max = Math.max(...es);
+  const y = (e) => H - m - ((e - min) / (max - min || 1)) * (H - 2 * m);
+  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="Diagrama de niveles de energía de los orbitales"><line class="eje" x1="40" y1="${m - 10}" x2="40" y2="${H - m + 10}"/>`;
+  svg += `<text x="6" y="14">E (eV)</text>`;
+  for (const x of lista) {
+    const yy = y(x.energia_ev).toFixed(1);
+    svg += `<line class="nivel ${x.ocupacion ? 'ocupado' : 'vacio'}" x1="70" x2="150" y1="${yy}" y2="${yy}"><title>${x.etiqueta}: ${x.energia_ev.toFixed(3)} eV</title></line>`;
+    svg += `<text x="36" y="${(+yy + 4).toFixed(1)}" text-anchor="end">${x.energia_ev.toFixed(1)}</text>`;
+    if (x.etiqueta === 'HOMO' || x.etiqueta === 'LUMO') svg += `<text x="158" y="${(+yy + 4).toFixed(1)}">${x.etiqueta}</text>`;
+    if (x.ocupacion) {
+      const flechas = x.ocupacion === 2 ? '↑↓' : '↑';
+      svg += `<text x="110" y="${(+yy - 4).toFixed(1)}" text-anchor="middle">${flechas}</text>`;
+    }
+  }
+  svg += '</svg>';
+  let tabla = '<div class="tabla-scroll"><table><thead><tr><th>Orbital</th><th class="num">N.º</th><th class="num">Ocupación</th><th class="num">E (E<sub>h</sub>)</th><th class="num">E (eV)</th></tr></thead><tbody>';
+  for (const x of [...lista].reverse()) {
+    tabla += `<tr class="${x.etiqueta === 'HOMO' || x.etiqueta === 'LUMO' ? 'destacada' : ''}"><td>${x.etiqueta}</td><td class="num">${x.indice}</td><td class="num">${x.ocupacion}</td><td class="num">${fx(x.energia_hartree, 5)}</td><td class="num">${fx(x.energia_ev, 3)}</td></tr>`;
+  }
+  tabla += '</tbody></table></div>';
+  const botones = (r.cubos || []).filter((c) => c === 'homo' || c === 'lumo')
+    .map((c) => `<button class="btn sec chico" data-ver-sup="${c}" type="button">Ver ${c.toUpperCase()} en 3D</button>`).join(' ');
+  panel.innerHTML = `<div class="dos-col"><div>${svg}</div><div>${tabla}
+    <p class="nota">${o.capa_cerrada ? 'Capa cerrada (RHF/RKS)' : 'Capa abierta (UHF/UKS): se muestran los orbitales α'} · ${o.n_alfa} e<sup>−</sup> α, ${o.n_beta} e<sup>−</sup> β · ${o.n_funciones_base} funciones de base.</p>
+    <div class="grupo-btn">${botones}</div></div></div>`;
+}
+
+function panelCargas(r) {
+  const panel = $('[data-panel="cargas"]');
+  const q = r.cargas_mulliken;
+  if (!q) { panel.innerHTML = '<p class="nota">No se obtuvieron cargas de Mulliken.</p>'; return; }
+  const suma = q.reduce((s, x) => s + x.carga, 0);
+  let html = '<div class="tabla-scroll"><table><thead><tr><th>Átomo</th><th>Elemento</th><th class="num">Carga de Mulliken (e)</th><th></th></tr></thead><tbody>';
+  for (const x of q) {
+    const ancho = Math.min(60, Math.abs(x.carga) * 100);
+    const color = x.carga < 0 ? 'var(--rojo)' : 'var(--azul)';
+    html += `<tr><td>${x.atomo}</td><td>${esc(x.elemento)}</td><td class="num">${x.carga >= 0 ? '+' : ''}${x.carga.toFixed(4)}</td><td><span style="display:inline-block;height:8px;width:${ancho}px;background:${color};border-radius:2px"></span></td></tr>`;
+  }
+  html += `</tbody></table></div><p class="nota">Suma de cargas: ${suma.toFixed(4)} e. Active «Color por carga» y «Etiquetas» en el visor para verlas sobre la molécula (rojo = negativa, azul = positiva). Las cargas de Mulliken dependen mucho de la base.</p>`;
+  html += '<button class="btn sec chico" type="button" id="verCargas">Mostrar cargas en el visor</button>';
+  panel.innerHTML = html;
+}
+
+function espectroIR(modos, escala) {
+  const W = 760; const H = 280; const m = { l: 46, r: 14, t: 14, b: 40 };
+  const reales = modos.filter((x) => !x.imaginaria);
+  if (!reales.length) return '<p class="nota">No hay modos reales.</p>';
+  const conI = reales.some((x) => x.intensidad_ir != null);
+  const I = (x) => (conI ? Math.max(0, x.intensidad_ir || 0) : 1);
+  const fmax = Math.max(...reales.map((x) => x.frecuencia_cm * escala));
+  const xmax = Math.max(4000, Math.ceil((fmax + 200) / 500) * 500); const xmin = 400;
+  const X = (f) => m.l + ((xmax - f) / (xmax - xmin)) * (W - m.l - m.r);
+  const Y = (v) => H - m.b - v * (H - m.t - m.b);
+  const imax = Math.max(...reales.map(I)) || 1;
+  const g = 10; // semianchura (cm⁻¹) de la lorentziana
+  const pts = [];
+  let cmax = 0;
+  for (let f = xmin; f <= xmax; f += 2) {
+    let s = 0;
+    for (const x of reales) { const d = f - x.frecuencia_cm * escala; s += I(x) * g * g / (d * d + g * g); }
+    pts.push([f, s]); cmax = Math.max(cmax, s);
+  }
+  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="Espectro infrarrojo simulado">`;
+  for (let f = Math.ceil(xmin / 500) * 500; f <= xmax; f += 500) {
+    svg += `<line class="rejilla" x1="${X(f)}" x2="${X(f)}" y1="${m.t}" y2="${H - m.b}"/><text x="${X(f)}" y="${H - m.b + 16}" text-anchor="middle">${f}</text>`;
+  }
+  svg += `<line class="eje" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/><line class="eje" x1="${m.l}" x2="${m.l}" y1="${m.t}" y2="${H - m.b}"/>`;
+  svg += `<text x="${(W + m.l) / 2}" y="${H - 6}" text-anchor="middle">Número de onda (cm⁻¹)</text>`;
+  svg += `<text x="12" y="${(H - m.b + m.t) / 2}" text-anchor="middle" transform="rotate(-90 12 ${(H - m.b + m.t) / 2})">${conI ? 'Intensidad relativa' : 'Modos (sin intensidad)'}</text>`;
+  if (conI) svg += `<path class="curva" d="M${pts.map(([f, s]) => `${X(f).toFixed(1)},${Y(s / cmax).toFixed(1)}`).join('L')}"/>`;
+  for (const x of reales) {
+    const xx = X(x.frecuencia_cm * escala).toFixed(1);
+    const alto = Y(I(x) / imax).toFixed(1);
+    svg += `<rect class="barra-clic" data-modo="${x.numero}" x="${xx - 5}" y="${m.t}" width="10" height="${H - m.b - m.t}"><title>Modo ${x.numero}: ${(x.frecuencia_cm * escala).toFixed(1)} cm⁻¹${x.intensidad_ir != null ? ` · ${x.intensidad_ir.toFixed(1)} km/mol` : ''}</title></rect>`;
+    svg += `<line class="barra" data-barra="${x.numero}" x1="${xx}" x2="${xx}" y1="${H - m.b}" y2="${alto}"/>`;
+  }
+  return `${svg}</svg>`;
+}
+
+function panelVibraciones(r) {
+  const panel = $('[data-panel="vibraciones"]');
+  const f = r.frecuencias;
+  if (!f) { panel.innerHTML = '<p class="nota">Elija «Optimización + frecuencias» para obtener el espectro IR.</p>'; return; }
+  const sugerido = { hf: 0.90, b3lyp: 0.96, pbe0: 0.95, 'wb97x-d': 0.95, 'm06-2x': 0.95, mp2: 0.95 }[r.metodo] || 1;
+  let html = `<div class="controles-fila">
+    <label>Factor de escala <input type="number" id="escalaIR" min="0.8" max="1.1" step="0.005" value="1"></label>
+    <span class="nota">(sugerido para ${esc(nombreDe('metodos', r.metodo))}: ≈${sugerido})</span>
+    <label>Amplitud <input type="range" id="amplitud" min="0.1" max="1.2" step="0.05" value="0.5"></label>
+    <label class="chk"><input type="checkbox" id="flechas" checked> Flechas</label>
+    <button class="btn sec chico" type="button" id="detenerVib">Detener animación</button>
+  </div><div id="espectro"></div>
+  <p class="nota">Haga clic en un pico o en una fila de la tabla para animar el modo normal en el visor 3D. Frecuencias armónicas${f.modos.some((x) => x.intensidad_ir != null) ? '; intensidades IR en km/mol' : '; esta versión de Psi4 no entregó intensidades IR'}.</p>
+  <div class="tabla-scroll"><table><thead><tr><th>Modo</th><th class="num">Frecuencia (cm⁻¹)</th><th class="num">Escalada</th><th class="num">Intensidad IR (km/mol)</th></tr></thead><tbody id="tablaModos">`;
+  for (const x of f.modos) {
+    html += `<tr class="clic" data-modo="${x.numero}"><td>${x.numero}</td><td class="num">${x.imaginaria ? `${Math.abs(x.frecuencia_cm).toFixed(1)} i` : x.frecuencia_cm.toFixed(1)}</td><td class="num" data-escalada="${x.frecuencia_cm}">${x.imaginaria ? '—' : x.frecuencia_cm.toFixed(1)}</td><td class="num">${x.intensidad_ir != null ? x.intensidad_ir.toFixed(2) : '—'}</td></tr>`;
+  }
+  html += '</tbody></table></div>';
+  panel.innerHTML = html;
+  const dibujar = () => {
+    const esc_ = parseFloat($('#escalaIR').value) || 1;
+    $('#espectro').innerHTML = espectroIR(f.modos, esc_);
+    $$('[data-escalada]').forEach((td) => { td.textContent = (parseFloat(td.dataset.escalada) * esc_).toFixed(1); });
+    if (estado.modoActivo) $(`[data-barra="${estado.modoActivo}"]`)?.classList.add('activa');
+  };
+  dibujar();
+  $('#escalaIR').addEventListener('input', dibujar);
+  $('#amplitud').addEventListener('change', () => estado.modoActivo && animarModo(estado.modoActivo));
+  $('#flechas').addEventListener('change', () => estado.modoActivo && animarModo(estado.modoActivo));
+  $('#detenerVib').addEventListener('click', () => { cargarModelo(estado.resultado.geometria_xyz, 'xyz', { zoom: false }); });
+  panel.onclick = (ev) => {
+    const el = ev.target.closest('[data-modo]');
+    if (el) animarModo(parseInt(el.dataset.modo, 10));
+  };
+}
+
+function animarModo(numero) {
+  const r = estado.resultado;
+  const modo = r.frecuencias.modos.find((x) => x.numero === numero);
+  if (!modo || !modo.desplazamientos) return;
+  cargarModelo(r.geometria_xyz, 'xyz', { zoom: false });
+  const v = estado.visor;
+  v.removeAllLabels();
+  const modelo = v.getModel();
+  modelo.selectedAtoms({}).forEach((a, i) => {
+    const d = modo.desplazamientos[i] || [0, 0, 0];
+    a.dx = d[0]; a.dy = d[1]; a.dz = d[2];
+  });
+  const amp = parseFloat($('#amplitud')?.value || '0.5');
+  const flechas = $('#flechas')?.checked ? { color: '#c41237', radius: 0.06 } : undefined;
+  // 3Dmol necesita al menos un cuadro registrado para poder generar la vibración
+  if (!modelo.getNumFrames()) modelo.frames = [modelo.atoms];
+  modelo.vibrate(12, amp, true, flechas);
+  v.animate({ loop: 'backAndForth', interval: 50 });
+  v.render();
+  estado.modoActivo = numero;
+  $$('[data-barra]').forEach((b) => b.classList.toggle('activa', b.dataset.barra === String(numero)));
+  $$('#tablaModos tr').forEach((tr) => tr.classList.toggle('activa', tr.dataset.modo === String(numero)));
+  $('#etiquetaModelo').textContent = `Modo ${numero}: ${modo.imaginaria ? `${Math.abs(modo.frecuencia_cm).toFixed(1)}i` : modo.frecuencia_cm.toFixed(1)} cm⁻¹`;
+}
+
+function panelOptimizacion(r) {
+  const panel = $('[data-panel="optimizacion"]');
+  const tr = (r.trayectoria || []).filter((p) => p.energia != null);
+  if (!tr.length) { panel.innerHTML = '<p class="nota">Este cálculo no incluyó optimización de geometría.</p>'; return; }
+  const W = 760; const H = 260; const m = { l: 60, r: 14, t: 14, b: 40 };
+  const efin = tr[tr.length - 1].energia;
+  const rel = tr.map((p) => (p.energia - efin) * HARTREE_KCAL);
+  const ymax = Math.max(...rel, 1e-6); const ymin = Math.min(...rel, 0);
+  const X = (i) => m.l + (tr.length === 1 ? 0.5 : i / (tr.length - 1)) * (W - m.l - m.r);
+  const Y = (v) => H - m.b - ((v - ymin) / (ymax - ymin || 1)) * (H - m.t - m.b);
+  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="Energía durante la optimización">`;
+  for (let k = 0; k <= 4; k++) {
+    const v = ymin + (k / 4) * (ymax - ymin);
+    svg += `<line class="rejilla" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(2)}</text>`;
+  }
+  svg += `<line class="eje" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
+  tr.forEach((p, i) => { svg += `<text x="${X(i)}" y="${H - m.b + 16}" text-anchor="middle">${p.paso}</text>`; });
+  svg += `<text x="${(W + m.l) / 2}" y="${H - 6}" text-anchor="middle">Paso de optimización</text>`;
+  svg += `<text x="14" y="${(H - m.b + m.t) / 2}" text-anchor="middle" transform="rotate(-90 14 ${(H - m.b + m.t) / 2})">ΔE (kcal/mol)</text>`;
+  svg += `<path class="curva" d="M${tr.map((p, i) => `${X(i).toFixed(1)},${Y(rel[i]).toFixed(1)}`).join('L')}"/>`;
+  tr.forEach((p, i) => { svg += `<circle class="punto" data-paso="${i}" cx="${X(i)}" cy="${Y(rel[i])}" r="5" style="cursor:pointer"><title>Paso ${p.paso}: ${p.energia.toFixed(8)} Eh (ΔE ${rel[i].toFixed(3)} kcal/mol)</title></circle>`; });
+  svg += '</svg>';
+  panel.innerHTML = `${svg}
+    <div class="controles-fila">
+      <button class="btn sec chico" type="button" id="reproducirOpt">▶ Reproducir</button>
+      <label>Paso <input type="range" id="pasoOpt" min="0" max="${tr.length - 1}" value="${tr.length - 1}"></label>
+      <span id="infoPaso" class="nota"></span>
+    </div>
+    <p class="nota">${tr.length} pasos. La energía baja hasta converger en el mínimo. Diferencia total: ${(rel[0]).toFixed(3)} kcal/mol respecto a la geometría inicial (MMFF).</p>`;
+  const verPaso = (i) => {
+    i = Math.max(0, Math.min(tr.length - 1, i));
+    $('#pasoOpt').value = i;
+    $('#infoPaso').textContent = `Paso ${tr[i].paso}: E = ${tr[i].energia.toFixed(8)} Eh · ΔE = ${rel[i].toFixed(3)} kcal/mol`;
+    $$('[data-paso]').forEach((c) => c.classList.toggle('activo', c.dataset.paso === String(i)));
+    const v = estado.visor;
+    v.removeAllModels();
+    v.addModel(xyzCompleto(tr[i].xyz), 'xyz');
+    aplicarEstilo();
+    $('#etiquetaModelo').textContent = `Optimización · paso ${tr[i].paso} de ${tr.length}`;
+  };
+  $('#pasoOpt').addEventListener('input', (e) => { detenerReproduccion(); verPaso(parseInt(e.target.value, 10)); });
+  panel.querySelector('svg').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-paso]');
+    if (c) { detenerReproduccion(); verPaso(parseInt(c.dataset.paso, 10)); }
+  });
+  const detenerReproduccion = () => { clearInterval(estado.reproductor); estado.reproductor = null; $('#reproducirOpt').textContent = '▶ Reproducir'; };
+  $('#reproducirOpt').addEventListener('click', () => {
+    if (estado.reproductor) { detenerReproduccion(); return; }
+    estado.visor.stopAnimate();
+    let i = 0;
+    $('#reproducirOpt').textContent = '■ Detener';
+    verPaso(0);
+    estado.reproductor = setInterval(() => {
+      i++;
+      if (i >= tr.length) { detenerReproduccion(); return; }
+      verPaso(i);
+    }, 450);
+  });
+  $('#infoPaso').textContent = `Paso ${tr[tr.length - 1].paso}: E = ${efin.toFixed(8)} Eh (final)`;
+}
+
+function panelArchivos(t, r) {
+  const panel = $('[data-panel="archivos"]');
+  const base = (t.titulo || 'molecula').replace(/\s+/g, '_');
+  panel.innerHTML = `<div class="grupo-btn">
+      <button class="btn sec" type="button" data-archivo="salida.dat">Salida de Psi4 (salida.dat)</button>
+      <button class="btn sec" type="button" data-archivo="geometria.xyz">Geometría final (.xyz)</button>
+      <button class="btn sec" type="button" id="verSalida">Mostrar salida completa</button>
+    </div>
+    <p class="nota">Identificador del cálculo: <code>${esc(t.id)}</code>. Los resultados se guardan en el servidor durante un tiempo limitado.</p>
+    <pre class="salida-completa" id="salidaCompleta" hidden></pre>`;
+  panel.onclick = async (ev) => {
+    const b = ev.target.closest('[data-archivo]');
+    try {
+      if (b) {
+        const texto = await api(`/api/calculos/${t.id}/archivo/${b.dataset.archivo}`);
+        descargar(texto, `${base}_${b.dataset.archivo}`);
+      } else if (ev.target.id === 'verSalida') {
+        const pre = $('#salidaCompleta');
+        if (pre.hidden) { pre.textContent = await api(`/api/calculos/${t.id}/archivo/salida.dat`); pre.hidden = false; ev.target.textContent = 'Ocultar salida'; } else { pre.hidden = true; ev.target.textContent = 'Mostrar salida completa'; }
+      }
+    } catch (e) { alert(e.message); }
+  };
+}
+
+// ---------- Historial (en este navegador) ----------
+function historial() { return leerLS(LS_HIST, []); }
+function guardarEnHistorial(t) {
+  const h = historial().filter((x) => x.id !== t.id);
+  h.unshift({ id: t.id, titulo: t.titulo, formula: t.formula, metodo: t.metodo, base: t.base, tarea: t.tarea, estado: t.estado, creado: t.creado });
+  escribirLS(LS_HIST, h.slice(0, 40));
+  pintarHistorial();
+}
+function actualizarHistorial(t) {
+  const h = historial();
+  const x = h.find((y) => y.id === t.id);
+  if (x && x.estado !== t.estado) { x.estado = t.estado; escribirLS(LS_HIST, h); pintarHistorial(); }
+}
+function quitarDelHistorial(id) { escribirLS(LS_HIST, historial().filter((x) => x.id !== id)); pintarHistorial(); }
+function pintarHistorial() {
+  const ul = $('#historial');
+  const h = historial();
+  if (!h.length) { ul.innerHTML = '<li class="vacio">Aún no hay cálculos en este navegador.</li>'; return; }
+  const txt = { en_cola: 'en cola', ejecutando: 'calculando', terminado: 'terminado', error: 'error' };
+  ul.innerHTML = h.map((x) => `<li data-id="${esc(x.id)}" tabindex="0">
+      <span class="h-titulo">${esc(x.titulo)}</span>
+      <span class="h-detalle">${esc(x.formula || '')} · ${esc(nombreDe('metodos', x.metodo))}/${esc(nombreDe('bases', x.base))} · ${esc(nombreDe('tareas', x.tarea))} · ${new Date(x.creado).toLocaleString()}</span>
+      <span class="pildora ${x.estado === 'error' ? 'error' : x.estado === 'en_cola' ? 'cola' : ''}">${txt[x.estado] || esc(x.estado)}</span></li>`).join('');
+}
+
+// ---------- Eventos ----------
+function eventos() {
+  const sel = $('#ejemplos');
+  sel.innerHTML += EJEMPLOS.map(([n, s]) => `<option value="${esc(s)}">${esc(n)}</option>`).join('');
+  sel.addEventListener('change', () => {
+    if (!sel.value) return;
+    leerEnJSME(sel.value);
+    $('#titulo').value = sel.options[sel.selectedIndex].text;
+    sel.value = '';
+    generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; });
+  });
+  $('#leerSmiles').addEventListener('click', () => {
+    const s = $('#smiles').value.trim();
+    if (!s) return;
+    leerEnJSME(s);
+    generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; });
+  });
+  $('#smiles').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#leerSmiles').click(); } });
+  $('#generar3d').addEventListener('click', () => generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; }));
+  $('#formCalculo').addEventListener('submit', calcular);
+  ['#metodo', '#base', '#tarea'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
+
+  $('#estilo').addEventListener('change', () => {
+    if (estado.modoActivo) animarModo(estado.modoActivo); else aplicarEstilo();
+  });
+  $('#etiquetas').addEventListener('change', aplicarEstilo);
+  $('#colorCargas').addEventListener('change', aplicarEstilo);
+  $('#superficie').addEventListener('change', () => { ajustarDeslizador(); mostrarSuperficie(); });
+  $('#isovalor').addEventListener('input', () => { $('#isoSalida').textContent = parseFloat($('#isovalor').value).toFixed(3); });
+  $('#isovalor').addEventListener('change', mostrarSuperficie);
+  $('#centrar').addEventListener('click', () => { estado.visor.zoomTo(); estado.visor.render(); });
+  $('#girar').addEventListener('click', () => { estado.girando = !estado.girando; estado.visor.spin(estado.girando ? 'y' : false); });
+  $('#png').addEventListener('click', () => descargar(estado.visor.pngURI(), 'molecula.png'));
+
+  $('.pestanas').addEventListener('click', (e) => {
+    const b = e.target.closest('button[data-pestana]');
+    if (b && !b.disabled) abrirPestana(b.dataset.pestana);
+  });
+  $('#resultados').addEventListener('click', (e) => {
+    const b = e.target.closest('[data-ver-sup]');
+    if (b) { $('#superficie').value = b.dataset.verSup; ajustarDeslizador(); mostrarSuperficie(); $('#visor').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
+    if (e.target.id === 'verCargas') {
+      $('#colorCargas').checked = true; $('#etiquetas').checked = true;
+      cargarModelo(estado.resultado.geometria_xyz, 'xyz', { zoom: false });
+      $('#visor').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }
+  });
+  $('#cancelar').addEventListener('click', async () => {
+    if (!estado.trabajo || !confirm('¿Cancelar este cálculo?')) return;
+    try { await api(`/api/calculos/${estado.trabajo}`, { method: 'DELETE' }); } catch (e) { alert(e.message); }
+  });
+
+  const abrir = (li) => li?.dataset.id && seguir(li.dataset.id);
+  $('#historial').addEventListener('click', (e) => abrir(e.target.closest('li')));
+  $('#historial').addEventListener('keydown', (e) => { if (e.key === 'Enter') abrir(e.target.closest('li')); });
+  $('#borrarHistorial').addEventListener('click', () => { if (confirm('¿Quitar todos los cálculos de esta lista? (no se borran del servidor)')) { escribirLS(LS_HIST, []); pintarHistorial(); } });
+
+  $('#guardarClave').addEventListener('click', () => {
+    escribirLS(LS_CLAVE, $('#clave').value);
+    $('#panelClave').hidden = true;
+    cargarOpciones();
+  });
+}
+
+// ---------- Inicio ----------
+iniciarVisor();
+eventos();
+pintarHistorial();
+cargarOpciones();

@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Psi4 Química Cuántica</title>
+  <meta name="description" content="Dibuje una molécula orgánica en JSME, visualícela en 3D y calcule sus propiedades mecánico-cuánticas con Psi4.">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='9' fill='%23299100'/%3E%3Cellipse cx='32' cy='32' rx='28' ry='11' fill='none' stroke='%23299100' stroke-width='4'/%3E%3Cellipse cx='32' cy='32' rx='28' ry='11' fill='none' stroke='%23c41237' stroke-width='4' transform='rotate(60 32 32)'/%3E%3Cellipse cx='32' cy='32' rx='28' ry='11' fill='none' stroke='%23299100' stroke-width='4' transform='rotate(120 32 32)'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="estilos.css">
+</head>
+<body>
+  <header class="cabecera">
+    <div class="marca">
+      <svg class="logo" viewBox="0 0 64 64" aria-hidden="true">
+        <circle cx="32" cy="32" r="8" />
+        <ellipse cx="32" cy="32" rx="28" ry="11" />
+        <ellipse cx="32" cy="32" rx="28" ry="11" transform="rotate(60 32 32)" />
+        <ellipse cx="32" cy="32" rx="28" ry="11" transform="rotate(120 32 32)" />
+      </svg>
+      <div>
+        <h1>Química Cuántica con Psi4</h1>
+        <p class="sub">Universidad Autónoma de Chiriquí · Dibuje, visualice en 3D y calcule</p>
+      </div>
+    </div>
+    <div class="estado-servidor" id="estadoServidor">Conectando…</div>
+  </header>
+
+  <div class="aviso-clave" id="panelClave" hidden>
+    <label for="clave">Clave de acceso del curso</label>
+    <input id="clave" type="password" autocomplete="current-password" placeholder="Escriba la clave que le dio el docente">
+    <button class="btn" id="guardarClave" type="button">Entrar</button>
+  </div>
+
+  <main class="contenido">
+    <section class="tarjeta" aria-labelledby="t1">
+      <div class="tarjeta-cab">
+        <h2 id="t1"><span class="paso">1</span> Dibuje la molécula</h2>
+        <select id="ejemplos" aria-label="Cargar un ejemplo">
+          <option value="">Cargar ejemplo…</option>
+        </select>
+      </div>
+      <div id="jsme" class="jsme-caja"><p class="cargando">Cargando editor JSME…</p></div>
+      <div class="fila-smiles">
+        <label for="smiles" class="vis-oculto">SMILES</label>
+        <input id="smiles" type="text" spellcheck="false" placeholder="o escriba un SMILES, p. ej. CC(=O)O">
+        <button class="btn sec" id="leerSmiles" type="button">Leer SMILES</button>
+      </div>
+      <div class="acciones">
+        <button class="btn" id="generar3d" type="button">Generar geometría 3D</button>
+        <span class="info" id="infoMolecula">Dibuje una estructura y pulse «Generar geometría 3D».</span>
+      </div>
+    </section>
+
+    <section class="tarjeta" aria-labelledby="t2">
+      <div class="tarjeta-cab">
+        <h2 id="t2"><span class="paso">3D</span> Visor molecular</h2>
+        <span class="etiqueta-modelo" id="etiquetaModelo">sin molécula</span>
+      </div>
+      <div class="visor-caja">
+        <div id="visor" class="visor" aria-label="Visor 3D de la molécula"></div>
+        <div class="leyenda" id="leyenda" hidden></div>
+      </div>
+      <div class="barra-visor">
+        <label>Estilo
+          <select id="estilo">
+            <option value="bolas">Bolas y varillas</option>
+            <option value="varillas">Varillas</option>
+            <option value="esferas">Esferas (van der Waals)</option>
+            <option value="lineas">Líneas</option>
+          </select>
+        </label>
+        <label>Superficie
+          <select id="superficie">
+            <option value="ninguna">Ninguna</option>
+          </select>
+        </label>
+        <label class="ctrl-iso" id="ctrlIso" hidden><span id="isoTexto">Isovalor</span>
+          <input id="isovalor" type="range" min="0.01" max="0.12" step="0.005" value="0.05">
+          <output id="isoSalida">0.050</output>
+        </label>
+        <label class="chk"><input type="checkbox" id="etiquetas"> Etiquetas</label>
+        <label class="chk" id="ctrlCargas" hidden><input type="checkbox" id="colorCargas"> Color por carga</label>
+        <div class="grupo-btn">
+          <button class="btn sec chico" id="centrar" type="button" title="Centrar la vista">Centrar</button>
+          <button class="btn sec chico" id="girar" type="button" title="Girar automáticamente">Girar</button>
+          <button class="btn sec chico" id="png" type="button" title="Descargar imagen PNG">PNG</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="tarjeta ancho" aria-labelledby="t3">
+      <div class="tarjeta-cab">
+        <h2 id="t3"><span class="paso">2</span> Configure el cálculo Psi4</h2>
+      </div>
+      <form id="formCalculo" class="form-calculo">
+        <label>Título
+          <input id="titulo" type="text" maxlength="80" placeholder="p. ej. etanol">
+        </label>
+        <label>Método
+          <select id="metodo"></select>
+        </label>
+        <label>Conjunto de base
+          <select id="base"></select>
+        </label>
+        <label>Tipo de cálculo
+          <select id="tarea"></select>
+        </label>
+        <label>Carga
+          <input id="carga" type="number" min="-4" max="4" step="1" value="0">
+        </label>
+        <label>Multiplicidad
+          <input id="multiplicidad" type="number" min="1" max="5" step="1" value="1">
+        </label>
+        <label class="chk largo"><input type="checkbox" id="mep" checked> Calcular potencial electrostático (MEP)</label>
+        <div class="acciones fin">
+          <span class="info" id="estimacion"></span>
+          <button class="btn grande" id="calcular" type="submit">Calcular con Psi4</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="tarjeta ancho" aria-labelledby="t4" id="seccionResultados" hidden>
+      <div class="tarjeta-cab">
+        <h2 id="t4"><span class="paso">3</span> Resultados</h2>
+        <div class="grupo-btn">
+          <span class="pildora" id="pildoraEstado"></span>
+          <button class="btn sec chico peligro" id="cancelar" type="button" hidden>Cancelar</button>
+        </div>
+      </div>
+      <div id="progreso" class="progreso" hidden>
+        <div class="barra-prog"><div></div></div>
+        <p><strong id="etapa">En cola</strong> · <span id="cronometro">0:00</span></p>
+        <details>
+          <summary>Ver salida de Psi4 en vivo</summary>
+          <pre id="registro" class="registro"></pre>
+        </details>
+      </div>
+      <div id="errorCalculo" class="error" hidden></div>
+      <div id="resultados" hidden>
+        <nav class="pestanas" role="tablist">
+          <button role="tab" data-pestana="resumen" aria-selected="true">Resumen</button>
+          <button role="tab" data-pestana="orbitales">Orbitales</button>
+          <button role="tab" data-pestana="cargas">Cargas</button>
+          <button role="tab" data-pestana="vibraciones" id="tabVib">Vibraciones (IR)</button>
+          <button role="tab" data-pestana="optimizacion" id="tabOpt">Optimización</button>
+          <button role="tab" data-pestana="archivos">Archivos</button>
+        </nav>
+        <div class="panel" data-panel="resumen"></div>
+        <div class="panel" data-panel="orbitales" hidden></div>
+        <div class="panel" data-panel="cargas" hidden></div>
+        <div class="panel" data-panel="vibraciones" hidden></div>
+        <div class="panel" data-panel="optimizacion" hidden></div>
+        <div class="panel" data-panel="archivos" hidden></div>
+      </div>
+    </section>
+
+    <section class="tarjeta ancho" aria-labelledby="t5">
+      <div class="tarjeta-cab">
+        <h2 id="t5">Mis cálculos</h2>
+        <button class="btn sec chico" id="borrarHistorial" type="button">Limpiar lista</button>
+      </div>
+      <ul class="historial" id="historial"></ul>
+    </section>
+  </main>
+
+  <footer class="pie">
+    Cálculos: <a href="https://psicode.org" target="_blank" rel="noopener">Psi4</a> ·
+    Editor: <a href="https://jsme-editor.github.io" target="_blank" rel="noopener">JSME</a> ·
+    Visor: <a href="https://3dmol.csb.pitt.edu" target="_blank" rel="noopener">3Dmol.js</a> ·
+    Geometrías: <a href="https://www.rdkit.org" target="_blank" rel="noopener">RDKit</a>
+    <span id="versionPsi4"></span>
+  </footer>
+
+  <script src="/vendor/3dmol/3Dmol-min.js"></script>
+  <script src="app.js"></script>
+  <script src="/vendor/jsme/jsme.nocache.js"></script>
+</body>
+</html>
