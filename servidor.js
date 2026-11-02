@@ -64,7 +64,16 @@ const TAREAS = [
   { id: 'optimizacion', nombre: 'Optimización de geometría' },
   { id: 'frecuencias', nombre: 'Optimización + frecuencias (IR y termoquímica)' },
   { id: 'ts', nombre: 'Estado de transición (TS) + frecuencias' },
+  { id: 'irc', nombre: 'Camino de reacción IRC (desde un TS)' },
 ];
+
+// Opciones del IRC (dirección, puntos por dirección y tamaño de paso en bohr·amu^½), acotadas
+function opcionesIRC(o = {}) {
+  const direccion = ['ambas', 'forward', 'backward'].includes(o.direccion) ? o.direccion : 'ambas';
+  const puntos = Math.min(60, Math.max(3, Math.round(Number(o.puntos) || 20)));
+  const paso = Math.min(0.5, Math.max(0.05, Number(o.paso) || 0.2));
+  return { direccion, puntos, paso: Math.round(paso * 1000) / 1000 };
+}
 // Elementos H–Kr y I (número atómico para validar electrones/multiplicidad)
 const Z = Object.fromEntries(
   ('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr')
@@ -362,6 +371,7 @@ app.post('/api/calculos', async (req, res) => {
 
     const id = crypto.randomUUID();
     const titulo = String(b.titulo || 'molécula').replace(/[^\p{L}\p{N} ()\-_,.+=#]/gu, '').slice(0, 80) || 'molécula';
+    const irc = tarea.id === 'irc' ? opcionesIRC(b.irc) : undefined;
     const t = {
       id, estado: 'en_cola', creado: ahora(), ip,
       titulo, formula: String(b.formula || '').slice(0, 60), smiles: String(b.smiles || '').slice(0, 500),
@@ -370,12 +380,12 @@ app.post('/api/calculos', async (req, res) => {
     await fsp.mkdir(carpetaDe(id), { recursive: true });
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.json'), JSON.stringify({
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      mep: b.mep !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo,
+      mep: b.mep !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc,
     }));
     // Entrada .in equivalente, para descargarla y ejecutarla con Psi4 fuera del servidor
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), generarEntradaPsi4({
       titulo, xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      memoria: CONFIG.memoria, mep: b.mep !== false,
+      memoria: CONFIG.memoria, mep: b.mep !== false, irc,
     }));
     trabajos.set(id, t);
     await guardarMeta(t);

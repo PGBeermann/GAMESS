@@ -177,6 +177,7 @@ kbd { font-family: var(--mono); font-size: .8em; padding: 1px 5px; border: 1px s
 .form-calculo label { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--gris); font-weight: 600; }
 .form-calculo label.chk { flex-direction: row; font-weight: 500; color: var(--texto); }
 .form-calculo .largo { grid-column: span 2; }
+.form-calculo .nota-irc { grid-column: 1 / -1; margin: 0; }
 @media (max-width: 520px) { .form-calculo .largo { grid-column: 1 / -1; } }
 
 /* Progreso */
@@ -247,7 +248,9 @@ td.asig span { display: block; font-size: .8rem; color: var(--gris); }
 .grafico .nivel.ocupado { stroke: var(--verde); }
 .grafico .nivel.vacio { stroke: var(--gris); stroke-dasharray: 4 3; }
 .grafico .punto { fill: var(--verde); }
+.grafico .punto.ts { fill: var(--tarjeta); stroke: var(--rojo); stroke-width: 2.5; }
 .grafico .punto.activo { fill: var(--rojo); }
+.grafico .etq-ts { fill: var(--rojo); font-weight: 700; font-size: 12px; }
 .controles-fila { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0; font-size: .9rem; }
 .controles-fila label { display: flex; gap: 6px; align-items: center; }
 .controles-fila input[type="number"] { width: 80px; }

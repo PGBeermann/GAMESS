@@ -96,7 +96,13 @@ function actualizarEstimacion() {
   const fm = { hf: 0.6, mp2: 3 }[metodo] || 1;
   // Hessiano analítico para HF; para DFT/MP2 Psi4 usa diferencias finitas de gradientes (~2 por coordenada)
   // El TS calcula dos hessianos (al inicio y al final) y suele necesitar más pasos
-  const ft = { energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1) }[tarea] || 1;
+  // El IRC calcula un hessiano por dirección y ~4 gradientes por punto
+  const dirs = $('#ircDireccion').value === 'ambas' ? 2 : 1;
+  const puntosIrc = parseInt($('#ircPuntos').value, 10) || 20;
+  const ft = {
+    energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1),
+    irc: dirs * ((metodo === 'hf' ? 5 : 3 * (n || 1)) + 4 * puntosIrc),
+  }[tarea] || 1;
   if (!pesados) { $('#estimacion').textContent = ''; return; }
   const seg = 0.04 * Math.pow(Math.max(pesados, 1), 3) * fb * fm * ft; // segundos aproximados con 4 hilos
   const nivel = seg < 40 ? 'rápido (segundos)' : seg < 240 ? 'moderado (1–4 min)' : seg < 1200 ? 'lento (4–20 min)' : 'muy lento: considere una base más pequeña o «Energía»';
@@ -447,6 +453,12 @@ async function aplicarEditor(avisosExtra = []) {
   $('#metodo').value = datos.metodo;
   $('#base').value = datos.base;
   $('#tarea').value = datos.tarea;
+  if (datos.irc) {
+    $('#ircDireccion').value = datos.irc.direccion;
+    $('#ircPuntos').value = datos.irc.puntos;
+    $('#ircPaso').value = datos.irc.paso;
+  }
+  mostrarOpcionesIRC();
   if (datos.mep) $('#mep').checked = true;
   $('#infoMolecula').innerHTML = `<strong>${esc(nombre)}</strong>: ${esc(g.formula)} · ${g.natomos} átomos · ${g.electrones} electrones · carga ${datos.carga} · multiplicidad ${datos.multiplicidad} · ${esc(nombreDe('metodos', datos.metodo))}/${esc(nombreDe('bases', datos.base))} · ${esc(nombreDe('tareas', datos.tarea))}`;
   avisos.push('Se usan las coordenadas del código tal cual. Si edita el dibujo, se generará una geometría nueva.');
@@ -470,7 +482,7 @@ async function abrirArchivo(archivo) {
       texto = generarEntradaPsi4({
         titulo: x.titulo || archivo.name.replace(/\.[^.]+$/, ''), xyz: x.xyz, carga: 0, multiplicidad: 1,
         metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: $('#tarea').value || 'energia',
-        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked,
+        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
       });
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
     }
@@ -494,9 +506,21 @@ async function entradaDesdeFormulario() {
   const texto = generarEntradaPsi4({
     titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
     metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
-    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked,
+    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
   });
   return { texto, nombre: `${nombreSeguro(titulo)}.in` };
+}
+
+// ---------- Opciones del IRC en el formulario ----------
+function opcionesIRCForm() {
+  const puntos = Math.min(60, Math.max(3, parseInt($('#ircPuntos').value, 10) || 20));
+  const paso = Math.min(0.5, Math.max(0.05, parseFloat($('#ircPaso').value) || 0.2));
+  return { direccion: $('#ircDireccion').value || 'ambas', puntos, paso };
+}
+
+function mostrarOpcionesIRC() {
+  const irc = $('#tarea').value === 'irc';
+  $$('.solo-irc').forEach((el) => { el.hidden = !irc; });
 }
 
 async function verEntradaActual() {
@@ -611,9 +635,11 @@ async function lanzarCalculo() {
     metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
     carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
     mep: $('#mep').checked,
+    irc: $('#tarea').value === 'irc' ? opcionesIRCForm() : undefined,
   };
   const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
-  if (g.molblock) estado.molblocks.set(t.id, g.molblock);
+  // En un IRC los enlaces cambian a lo largo del camino: no se fijan los del dibujo
+  if (g.molblock && cuerpo.tarea !== 'irc') estado.molblocks.set(t.id, g.molblock);
   guardarEnHistorial(t);
   seguir(t.id);
   return t;
@@ -842,7 +868,7 @@ function mostrarError(t) {
 function etiquetaModeloResultado() {
   const t = estado.infoTrabajo;
   if (!t) return;
-  const tipo = t.tarea === 'energia' ? 'geometría de entrada' : t.tarea === 'ts' ? 'estado de transición' : 'geometría optimizada';
+  const tipo = { energia: 'geometría de entrada', ts: 'estado de transición', irc: 'estado de transición (inicio del IRC)' }[t.tarea] || 'geometría optimizada';
   $('#etiquetaModelo').textContent = `${t.titulo} · ${nombreDe('metodos', t.metodo)}/${nombreDe('bases', t.base)} · ${tipo}`;
 }
 
@@ -865,11 +891,18 @@ function mostrarResultado(t) {
   panelOrbitales(r);
   panelCargas(r);
   panelVibraciones(r);
-  panelOptimizacion(r);
+  // La pestaña «Optimización» muestra el camino de reacción cuando el cálculo es un IRC
+  if (r.irc?.puntos?.length) {
+    $('#tabOpt').textContent = 'Camino IRC';
+    panelIRC(t, r);
+  } else {
+    $('#tabOpt').textContent = 'Optimización';
+    panelOptimizacion(r);
+  }
   panelArchivos(t, r);
   $('#tabVib').disabled = false;
   prepararVibraciones(r);
-  $('#tabOpt').disabled = !(r.trayectoria && r.trayectoria.length);
+  $('#tabOpt').disabled = !(r.trayectoria?.length || r.irc?.puntos?.length);
   abrirPestana('resumen');
 }
 
@@ -903,8 +936,18 @@ function panelResumen(t, r) {
   let html = `<div class="grupo-btn barra-guardar">
     <button class="btn sec chico" type="button" data-guardar="out">Guardar salida (.out)</button>
     <button class="btn sec chico" type="button" data-guardar="in">Guardar entrada (.in)</button>
+    ${r.tarea === 'ts' && f?.n_imaginarias === 1 ? '<button class="btn chico" type="button" id="lanzarIRC" title="Sigue el camino de mínima energía desde este TS hacia reactivos y productos">Calcular IRC desde este TS</button>' : ''}
   </div><div class="cifras">`;
-  html += cifra('Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  html += cifra(r.tarea === 'irc' ? 'Energía del TS' : 'Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  const irc = r.irc;
+  if (irc) {
+    const extremos = { '−': irc.barrera_desde_atras_kcal, '+': irc.barrera_desde_adelante_kcal };
+    for (const [lado, v] of Object.entries(extremos)) {
+      if (v != null) html += cifra(`Barrera desde el extremo ${lado}`, `${fx(v, 2)} kcal/mol`, `E(TS) − E(último punto ${lado} del IRC)`);
+    }
+    if (irc.energia_reaccion_kcal != null) html += cifra('Energía de reacción (− → +)', `${fx(irc.energia_reaccion_kcal, 2)} kcal/mol`, 'Entre los dos extremos del IRC (aprox.: optimice cada extremo para el valor exacto)');
+    html += cifra('Puntos del IRC', String(irc.puntos.length), `${irc.direccion === 'ambas' ? 'ambas direcciones' : `sólo ${irc.direccion}`} · paso ${irc.paso} bohr·amu½`);
+  }
   if (d) html += cifra('Momento dipolar', `${fx(d.total, 3)} D`, `x ${fx(d.x, 3)} · y ${fx(d.y, 3)} · z ${fx(d.z, 3)}`);
   if (o.homo_ev != null) html += cifra('HOMO / LUMO', `${fx(o.homo_ev, 3)} / ${fx(o.lumo_ev, 3)} eV`, o.gap_ev != null ? `Brecha HOMO–LUMO: ${fx(o.gap_ev, 3)} eV` : '');
   if (f) html += cifra('Frecuencias imaginarias', String(f.n_imaginarias), interpretarImaginarias(r.tarea, f.n_imaginarias));
@@ -922,7 +965,7 @@ function panelResumen(t, r) {
     for (const [k, v] of Object.entries(comp)) html += `<tr><td>${nombres[k] || esc(k)}</td><td class="num">${fx(v, 8)}</td></tr>`;
     html += '</tbody></table>';
   }
-  for (const n of [r.aviso, r.nota_propiedades, r.aviso_cubos, r.aviso_propiedades]) if (n) html += `<p class="nota">${esc(n)}</p>`;
+  for (const n of [r.aviso, r.nota_propiedades, r.aviso_cubos, r.aviso_propiedades, ...(r.irc?.avisos || [])]) if (n) html += `<p class="nota">${esc(n)}</p>`;
   $('[data-panel="resumen"]').innerHTML = html;
 }
 
@@ -1355,6 +1398,113 @@ function panelOptimizacion(r) {
   $('#infoPaso').textContent = `Paso ${tr[tr.length - 1].paso}: E = ${efin.toFixed(8)} Eh (final)`;
 }
 
+// ---------- Camino de reacción (IRC) ----------
+// Perfil de energía relativo al TS frente a la coordenada de reacción s, y animación del camino
+function panelIRC(t, r) {
+  const panel = $('[data-panel="optimizacion"]');
+  const pts = [...r.irc.puntos].sort((a, b) => a.s - b.s);
+  const W = 760; const H = 280; const m = { l: 62, r: 16, t: 28, b: 44 };
+  const xs = pts.map((p) => p.s); const ys = pts.map((p) => p.de_kcal);
+  const xmin = Math.min(...xs); const xmax = Math.max(...xs);
+  const ymin = Math.min(...ys, 0); const ymax = Math.max(...ys, 0) > ymin ? Math.max(...ys, 0) : ymin + 0.1;
+  const X = (s) => m.l + ((s - xmin) / (xmax - xmin || 1)) * (W - m.l - m.r);
+  const Y = (v) => H - m.b - ((v - ymin) / (ymax - ymin || 1)) * (H - m.t - m.b);
+  const its = pts.findIndex((p) => Math.abs(p.s) < 1e-9);
+  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="Perfil de energía del IRC">`;
+  for (let k = 0; k <= 4; k++) {
+    const v = ymin + (k / 4) * (ymax - ymin);
+    svg += `<line class="rejilla" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`;
+  }
+  for (let k = 0; k <= 4; k++) {
+    const s = xmin + (k / 4) * (xmax - xmin);
+    svg += `<text x="${X(s)}" y="${H - m.b + 16}" text-anchor="middle">${s.toFixed(2)}</text>`;
+  }
+  svg += `<line class="eje" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
+  svg += `<text x="${(W + m.l) / 2}" y="${H - 6}" text-anchor="middle">Coordenada de reacción s (bohr·amu½) · − hacia atrás · + hacia adelante</text>`;
+  svg += `<text x="14" y="${(H - m.b + m.t) / 2}" text-anchor="middle" transform="rotate(-90 14 ${(H - m.b + m.t) / 2})">E − E(TS) (kcal/mol)</text>`;
+  svg += `<path class="curva" d="M${pts.map((p) => `${X(p.s).toFixed(1)},${Y(p.de_kcal).toFixed(1)}`).join('L')}"/>`;
+  pts.forEach((p, i) => {
+    const ts = i === its;
+    svg += `<circle class="punto${ts ? ' ts' : ''}" data-paso="${i}" cx="${X(p.s)}" cy="${Y(p.de_kcal)}" r="${ts ? 7 : 5}" style="cursor:pointer"><title>${ts ? 'TS · ' : ''}s = ${p.s.toFixed(3)} · E = ${p.energia.toFixed(8)} Eh · ΔE = ${p.de_kcal.toFixed(2)} kcal/mol</title></circle>`;
+  });
+  if (its >= 0) svg += `<text x="${X(0)}" y="${Y(pts[its].de_kcal) - 12}" text-anchor="middle" class="etq-ts">TS</text>`;
+  svg += '</svg>';
+  panel.innerHTML = `${svg}
+    <div class="controles-fila">
+      <button class="btn sec chico" type="button" id="reproducirOpt">▶ Reproducir reacción</button>
+      <label>Punto <input type="range" id="pasoOpt" min="0" max="${pts.length - 1}" value="${Math.max(its, 0)}"></label>
+      <button class="btn sec chico" type="button" id="bajarIRC" title="Todos los puntos del camino como XYZ de varios cuadros (Avogadro, Jmol, VMD)">IRC como XYZ animado</button>
+      <span id="infoPaso" class="nota"></span>
+    </div>
+    <p class="nota">${pts.length} puntos del camino de mínima energía (coordenadas ponderadas por masa). El TS está en s = 0; los extremos se acercan a los mínimos de reactivos y productos. Para energías exactas de reactivos y productos, optimice la geometría de cada extremo.</p>`;
+  const verPaso = (i) => {
+    i = Math.max(0, Math.min(pts.length - 1, i));
+    const p = pts[i];
+    $('#pasoOpt').value = i;
+    $('#infoPaso').textContent = `${i === its ? 'TS · ' : ''}s = ${p.s.toFixed(3)} · E = ${p.energia.toFixed(8)} Eh · ΔE = ${p.de_kcal.toFixed(2)} kcal/mol`;
+    $$('[data-panel="optimizacion"] [data-paso]').forEach((c) => c.classList.toggle('activo', c.dataset.paso === String(i)));
+    const v = estado.visor;
+    v.stopAnimate();
+    quitarFlechas();
+    estado.modoActivo = null;
+    $('#vibPlay').textContent = '▶ Animar';
+    v.removeAllModels();
+    v.addModel(xyzCompleto(p.xyz), 'xyz'); // enlaces por distancia: se ven formarse y romperse
+    aplicarEstilo();
+    $('#etiquetaModelo').textContent = `IRC · punto ${i + 1} de ${pts.length}${i === its ? ' (TS)' : ''} · s = ${p.s.toFixed(2)}`;
+  };
+  const detener = () => { clearInterval(estado.reproductor); estado.reproductor = null; $('#reproducirOpt').textContent = '▶ Reproducir reacción'; };
+  $('#pasoOpt').addEventListener('input', (e) => { detener(); verPaso(parseInt(e.target.value, 10)); });
+  panel.querySelector('svg').addEventListener('click', (e) => {
+    const c = e.target.closest('[data-paso]');
+    if (c) { detener(); verPaso(parseInt(c.dataset.paso, 10)); }
+  });
+  $('#reproducirOpt').addEventListener('click', () => {
+    if (estado.reproductor) { detener(); return; }
+    estado.visor.stopAnimate();
+    // De un extremo al otro y de vuelta, hasta que se detenga
+    let i = 0; let sentido = 1;
+    $('#reproducirOpt').textContent = '■ Detener';
+    verPaso(0);
+    estado.reproductor = setInterval(() => {
+      if (i + sentido < 0 || i + sentido >= pts.length) sentido = -sentido;
+      i += sentido;
+      verPaso(i);
+    }, 220);
+  });
+  $('#bajarIRC').addEventListener('click', () => {
+    const marcos = pts.map((p, i) => {
+      const lineas = p.xyz.trim().split(/\r?\n/);
+      return `${lineas.length}\nIRC punto ${i + 1} s=${p.s.toFixed(4)} E=${p.energia.toFixed(8)}${i === its ? ' TS' : ''}\n${lineas.join('\n')}`;
+    });
+    descargar(`${marcos.join('\n')}\n`, `${nombreSeguro(t.titulo)}_IRC.xyz`);
+  });
+  $('#infoPaso').textContent = 'Pulse un punto o «Reproducir reacción».';
+}
+
+// Lanza un IRC desde la geometría del TS de este resultado
+async function calcularIRC(boton) {
+  const t = estado.infoTrabajo;
+  const r = estado.resultado;
+  boton.disabled = true;
+  try {
+    const nuevo = await api('/api/calculos', {
+      method: 'POST',
+      body: JSON.stringify({
+        xyz: r.geometria_xyz, formula: t.formula, smiles: t.smiles || '',
+        titulo: `${t.titulo} (IRC)`.slice(0, 80),
+        metodo: r.metodo, base: r.base, tarea: 'irc', irc: opcionesIRCForm(),
+        carga: r.carga, multiplicidad: r.multiplicidad, mep: false,
+      }),
+    });
+    guardarEnHistorial(nuevo);
+    seguir(nuevo.id);
+  } catch (e) {
+    alert(e.message);
+    boton.disabled = false;
+  }
+}
+
 function panelArchivos(t, r) {
   const panel = $('[data-panel="archivos"]');
   panel.innerHTML = `<div class="grupo-btn">
@@ -1443,7 +1593,8 @@ function eventos() {
     tarjeta.classList.remove('arrastrando');
     if (e.dataTransfer.files.length) abrirArchivo(e.dataTransfer.files[0]);
   });
-  ['#metodo', '#base', '#tarea'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
+  ['#metodo', '#base', '#tarea', '#ircDireccion', '#ircPuntos'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
+  $('#tarea').addEventListener('change', mostrarOpcionesIRC);
 
   $('#estilo').addEventListener('change', () => {
     if (estado.modoActivo) animarModo(estado.modoActivo); else aplicarEstilo();
@@ -1481,6 +1632,7 @@ function eventos() {
   $('#resultados').addEventListener('click', (e) => {
     const guardar = e.target.closest('[data-guardar]');
     if (guardar) { guardarArchivoTrabajo(guardar.dataset.guardar); return; }
+    if (e.target.id === 'lanzarIRC') { calcularIRC(e.target); return; }
     const b = e.target.closest('[data-ver-sup]');
     if (b) { $('#superficie').value = b.dataset.verSup; ajustarDeslizador(); mostrarSuperficie(); $('#visor').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     if (e.target.id === 'verCargas') {

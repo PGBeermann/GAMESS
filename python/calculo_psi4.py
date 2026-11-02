@@ -4,7 +4,7 @@ Uso:  python calculo_psi4.py <carpeta_del_trabajo>
 
 La carpeta debe contener `entrada.json` (lo escribe servidor.js):
     {"xyz": "C 0 0 0\\nH ...", "carga": 0, "multiplicidad": 1,
-     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts",
+     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts|irc",
      "mep": true, "hilos": 2, "memoria": "2 GB", "titulo": "etanol"}
 
 Archivos que produce en la carpeta:
@@ -16,6 +16,7 @@ Archivos que produce en la carpeta:
 Las líneas que empiezan con "@@ETAPA" en la salida estándar las usa el servidor
 para mostrar el progreso.
 """
+import contextlib
 import json
 import sys
 import time
@@ -33,7 +34,7 @@ AU_DEBYE = psi4.constants.dipmom_au2debye
 METODOS = {"hf", "b3lyp", "pbe0", "wb97x-d", "m06-2x", "mp2"}
 BASES = {"sto-3g", "3-21g", "6-31g", "6-31g*", "6-31g**", "6-31+g*", "6-311g**",
          "cc-pvdz", "aug-cc-pvdz", "def2-svp", "def2-tzvp"}
-TAREAS = {"energia", "optimizacion", "frecuencias", "ts"}
+TAREAS = {"energia", "optimizacion", "frecuencias", "ts", "irc"}
 
 
 def etapa(texto):
@@ -90,20 +91,23 @@ def emitir_paso(paso, mol, gradiente):
     print("@@GEOM " + json.dumps(datos), flush=True)
 
 
-def optimizar(metodo, mol):
-    """Optimiza la geometría y, si Psi4 lo permite, devuelve también la trayectoria.
+@contextlib.contextmanager
+def en_vivo(mol, contador=None, registro=None):
+    """Mientras dura el bloque, cada paso del optimizador se envía al visor 3D (@@GEOM).
 
-    Para mostrar la geometría en vivo se envuelve gradient(), que el ciclo de optimización de
-    Psi4 llama una vez por paso. Se reemplaza en el espacio de nombres de la propia función
-    optimize (optimize.__globals__), que es donde Psi4 la busca. Ojo: «psi4.driver» no sirve,
-    porque `from .driver import *` en psi4/__init__.py lo deja apuntando al módulo driver.py.
-    Si la envoltura no es posible, la optimización funciona igual, sin pasos intermedios.
+    Se envuelve gradient(), que el ciclo de optimización de Psi4 llama una vez por paso. Se
+    reemplaza en el espacio de nombres de la propia función optimize (optimize.__globals__),
+    que es donde Psi4 la busca. Ojo: «psi4.driver» no sirve, porque `from .driver import *` en
+    psi4/__init__.py lo deja apuntando al módulo driver.py. Si la envoltura no es posible, el
+    cálculo funciona igual, sin pasos intermedios.
+    `contador` (lista de un entero) permite numerar seguido entre varias llamadas; `registro`
+    (lista) guarda la energía y la geometría de cada paso.
     """
+    contador = contador if contador is not None else [0]
     espacio = getattr(psi4.optimize, "__globals__", None)
     if not (isinstance(espacio, dict) and callable(espacio.get("gradient"))):
         espacio = getattr(sys.modules.get("psi4.driver.driver"), "__dict__", None)
     original = espacio.get("gradient") if isinstance(espacio, dict) else None
-    pasos = [0]
 
     def gradiente_con_aviso(name, **kwargs):
         salida = original(name, **kwargs)
@@ -112,24 +116,33 @@ def optimizar(metodo, mol):
         if kwargs.get("molecule") is not mol:
             return salida
         try:
-            pasos[0] += 1
-            emitir_paso(pasos[0], kwargs.get("molecule") or mol, salida[0] if isinstance(salida, tuple) else salida)
+            contador[0] += 1
+            emitir_paso(contador[0], mol, salida[0] if isinstance(salida, tuple) else salida)
+            if registro is not None:
+                simbolos, coords = geometria_actual(mol)
+                registro.append({"energia": variable_global("CURRENT ENERGY"), "xyz": texto_xyz(simbolos, coords)})
         except Exception:  # noqa: BLE001  (el aviso nunca debe interrumpir el cálculo)
             pass
         return salida
 
     if callable(original):
         espacio["gradient"] = gradiente_con_aviso
-    historia = None
     try:
+        yield contador
+    finally:
+        if callable(original):
+            espacio["gradient"] = original
+
+
+def optimizar(metodo, mol):
+    """Optimiza la geometría y, si Psi4 lo permite, devuelve también la trayectoria."""
+    historia = None
+    with en_vivo(mol):
         try:
             salida = psi4.optimize(metodo, molecule=mol, return_wfn=True, return_history=True)
             energia, historia = salida[0], salida[-1]
         except TypeError:
             energia = psi4.optimize(metodo, molecule=mol)
-    finally:
-        if callable(original):
-            espacio["gradient"] = original
     trayectoria = []
     if isinstance(historia, dict) and historia.get("coordinates"):
         simbolos = [mol.symbol(i).capitalize() for i in range(mol.natom())]
@@ -139,6 +152,94 @@ def optimizar(metodo, mol):
             e = float(energias[i]) if i < len(energias) else None
             trayectoria.append({"paso": i + 1, "energia": e, "xyz": texto_xyz(simbolos, coords)})
     return float(energia), trayectoria
+
+
+def leer_camino_irc(mol):
+    """Puntos convergidos del IRC que Psi4 guarda en <prefijo>.opt.json (opción write_opt_history)."""
+    candidatos = []
+    try:
+        candidatos.append(Path(f"{psi4.core.get_writer_file_prefix(mol.name())}.opt.json"))
+    except Exception:  # noqa: BLE001
+        pass
+    candidatos += sorted(Path.cwd().glob("*.opt.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    for ruta in candidatos:
+        if not ruta.is_file():
+            continue
+        try:
+            datos = json.loads(ruta.read_text(encoding="utf-8"))
+            ruta.unlink()  # para que la siguiente dirección no lea este archivo
+        except Exception:  # noqa: BLE001
+            continue
+        camino = (datos.get("extras") or {}).get("irc_rxn_path") or []
+        return [p for p in camino if p and p.get("x") is not None and p.get("energy") is not None]
+    return None
+
+
+def irc(metodo, mol, direccion="ambas", puntos=20, paso=0.2):
+    """Camino de reacción intrínseco (IRC) desde un estado de transición.
+
+    optking recorre una dirección por llamada (forward = + a lo largo del modo imaginario), así
+    que para el camino completo se parte dos veces del TS. Cada recorrido calcula el hessiano en
+    el TS. Devuelve los puntos ordenados de un extremo al otro, con la coordenada de reacción s
+    (bohr·amu^½; negativa hacia atrás) y la energía.
+    """
+    simbolos = [mol.symbol(i).capitalize() for i in range(mol.natom())]
+    geom_ts = a_numpy(mol.geometry()).reshape(-1, 3).copy()  # bohr
+    direcciones = ["backward", "forward"] if direccion == "ambas" else [direccion]
+    nombres = {"backward": "hacia atrás (−)", "forward": "hacia adelante (+)"}
+    contador, ramas, avisos = [0], {}, []
+    for d in direcciones:
+        mol.set_geometry(psi4.core.Matrix.from_array(geom_ts))
+        mol.update_geometry()
+        psi4.set_options({"opt_type": "irc", "irc_direction": d, "irc_points": int(puntos),
+                          "irc_step_size": float(paso), "write_opt_history": True,
+                          "geom_maxiter": max(100, int(puntos) * 15)})
+        etapa(f"IRC {nombres[d]}: hessiano en el TS y hasta {puntos} puntos")
+        registro, error = [], None
+        with en_vivo(mol, contador, registro):
+            try:
+                psi4.optimize(metodo, molecule=mol)
+            except Exception as e:  # noqa: BLE001
+                if type(e).__name__ != "OptimizationConvergenceError":
+                    raise
+                error = e
+        camino = None if error else leer_camino_irc(mol)
+        signo = -1 if d == "backward" else 1
+        if camino:
+            pts = []
+            for i, p in enumerate(camino):
+                s = p.get("arc_dist") or p.get("step_dist") or i * paso
+                coords = a_numpy(p["x"]).reshape(-1, 3) * BOHR_ANG
+                pts.append({"s": signo * abs(float(s)), "energia": float(p["energy"]), "xyz": texto_xyz(simbolos, coords)})
+        else:
+            # Sin el resumen de optking: se usan todos los pasos evaluados (camino aproximado)
+            pts = [{"s": signo * i * paso, "energia": r["energia"], "xyz": r["xyz"]}
+                   for i, r in enumerate(registro) if r.get("energia") is not None]
+            if error:
+                avisos.append(f"El IRC {nombres[d]} se detuvo antes de terminar "
+                              f"({mensaje_error(error, 'irc')}). Se muestra el tramo recorrido, aproximado.")
+        ramas[d] = pts
+    psi4.set_options({"opt_type": "min", "write_opt_history": False})
+    atras, adelante = ramas.get("backward", []), ramas.get("forward", [])
+    # Ambas ramas empiezan en el TS (s = 0): se une sin repetirlo
+    union = list(reversed(atras)) + (adelante[1:] if atras and adelante else adelante)
+    if not union:
+        raise RuntimeError("El IRC no produjo ningún punto.")
+    e_ts = next((p["energia"] for p in union if abs(p["s"]) < 1e-9), union[0]["energia"])
+    for i, p in enumerate(union):
+        p["indice"] = i
+        p["de_kcal"] = (p["energia"] - e_ts) * HARTREE_KCAL
+    mol.set_geometry(psi4.core.Matrix.from_array(geom_ts))  # las propiedades se calculan en el TS
+    mol.update_geometry()
+    resumen = {"puntos": union, "energia_ts": e_ts, "direccion": direccion, "paso": paso,
+               "puntos_max": puntos, "avisos": avisos}
+    if atras:
+        resumen["barrera_desde_atras_kcal"] = (e_ts - atras[-1]["energia"]) * HARTREE_KCAL
+    if adelante:
+        resumen["barrera_desde_adelante_kcal"] = (e_ts - adelante[-1]["energia"]) * HARTREE_KCAL
+    if atras and adelante:
+        resumen["energia_reaccion_kcal"] = (adelante[-1]["energia"] - atras[-1]["energia"]) * HARTREE_KCAL
+    return resumen
 
 
 def propiedades_scf(scf, n_atomos, simbolos):
@@ -296,6 +397,9 @@ def mensaje_error(e, tarea=None):
             return ("La búsqueda del estado de transición no convergió. Parta de una geometría más "
                     "cercana al TS (por ejemplo, con los enlaces que se forman o rompen a distancias "
                     "intermedias) o pruebe primero con una base más pequeña.")
+        if tarea == "irc":
+            return ("optking no pudo seguir el camino (compruebe que la geometría de partida sea un "
+                    "TS con una sola frecuencia imaginaria; si el camino es muy curvo, reduzca el paso)")
         return "La optimización de geometría no convergió en el número máximo de pasos."
     if tipo == "TDSCFConvergenceError" or tipo == "ConvergenceError":
         return f"Un procedimiento iterativo no convergió: {e}"
@@ -341,6 +445,14 @@ def main():
         wfn_freq = None
         if tarea == "energia":
             etapa("Calculando la energía (punto simple)")
+            energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
+        elif tarea == "irc":
+            op = entrada.get("irc") or {}
+            direccion = op.get("direccion") if op.get("direccion") in ("ambas", "forward", "backward") else "ambas"
+            puntos = min(60, max(3, int(op.get("puntos") or 20)))
+            paso = min(0.5, max(0.05, float(op.get("paso") or 0.2)))
+            resultado["irc"] = irc(metodo, mol, direccion, puntos, paso)
+            etapa("Calculando la función de onda en el estado de transición")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         else:
             if tarea == "ts":

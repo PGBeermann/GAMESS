@@ -16,8 +16,8 @@
   const METODOS = ['hf', 'b3lyp', 'pbe0', 'wb97x-d', 'm06-2x', 'mp2'];
   const BASES = ['sto-3g', '3-21g', '6-31g', '6-31g*', '6-31g**', '6-31+g*', '6-311g**', 'cc-pvdz', 'aug-cc-pvdz', 'def2-svp', 'def2-tzvp'];
   // Opciones que no cambian el resultado químico (o que el servidor ya fija): se ignoran sin aviso
-  const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads|full_hess_every|step_type|hess_update)$/;
-  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias' };
+  const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads|full_hess_every|step_type|hess_update|write_opt_history)$/;
+  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC' };
   const ELEMENTOS = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr I').split(' '));
 
   function normalizarMetodo(m, avisos) {
@@ -156,15 +156,22 @@
     const lineas = resto.split('\n').map((l) => l.replace(/#.*$/, '').trim()).filter(Boolean);
 
     // Opciones: «set basis X», «set globals basis X» y bloques «set { … }»
-    let base = null; let esTS = false; const ignoradas = [];
+    let base = null; let esTS = false; let esIRC = false; const ignoradas = [];
+    const irc = { direcciones: new Set(), puntos: null, paso: null };
     const opcion = (clave, valor) => {
       const k = clave.toLowerCase();
+      const v = valor.trim().toLowerCase();
       if (k === 'basis') base = valor;
       else if (k === 'opt_type') {
-        const v = valor.trim().toLowerCase();
         if (v === 'ts') esTS = true;
-        else if (v === 'irc') throw new Error('Los cálculos IRC («opt_type irc») no están disponibles en este servidor.');
-      } else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
+        else if (v === 'irc') esIRC = true;
+      } else if (k === 'irc_direction') {
+        if (v === 'forward' || v === 'backward') irc.direcciones.add(v);
+        else ignoradas.push(`${clave} ${valor}`);
+      } else if (k === 'irc_points') irc.puntos = parseInt(v, 10);
+      else if (k === 'irc_step_size') irc.paso = parseFloat(v);
+      else if (k === 'irc_mode' || k === 'irc_convergence') ignoradas.push(`${clave} ${valor}`);
+      else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
     };
     // set { … }, set globals { … } o con nombre de módulo: set optking { … }, set scf { … }
     const bloques = /set\s*(?:\w+\s*)?\{([\s\S]*?)\}/gi;
@@ -190,8 +197,22 @@
     const hayFreq = fs.has('frequency') || fs.has('frequencies') || fs.has('freq') || fs.has('hessian');
     // opt_type también puede ir en optimize(…, optimizer_keywords={'opt_type': 'TS'})
     if (/['"]?opt_type['"]?\s*[:=]\s*['"]ts['"]/i.test(sinBloques)) esTS = true;
+    if (/['"]?opt_type['"]?\s*[:=]\s*['"]irc['"]/i.test(sinBloques)) esIRC = true;
     let tarea = hayFreq ? 'frecuencias' : hayOpt ? 'optimizacion' : 'energia';
-    if (esTS) {
+    let opcionesIrc = null;
+    if (esIRC) {
+      if (!hayOpt) throw new Error('«opt_type irc» necesita una llamada optimize(…): el IRC lo recorre el optimizador.');
+      tarea = 'irc';
+      const direccion = irc.direcciones.size === 1 ? [...irc.direcciones][0] : 'ambas';
+      const puntos = Number.isInteger(irc.puntos) ? Math.min(60, Math.max(3, irc.puntos)) : 20;
+      const paso = Number.isFinite(irc.paso) ? Math.min(0.5, Math.max(0.05, irc.paso)) : 0.2;
+      if (Number.isInteger(irc.puntos) && puntos !== irc.puntos) avisos.push(`irc_points ${irc.puntos}: se usa ${puntos} (permitido 3–60).`);
+      if (Number.isFinite(irc.paso) && paso !== irc.paso) avisos.push(`irc_step_size ${irc.paso}: se usa ${paso} (permitido 0.05–0.5).`);
+      opcionesIrc = { direccion, puntos, paso };
+      avisos.push(`Se calculará el camino de reacción IRC ${direccion === 'ambas' ? 'en ambas direcciones (hacia reactivos y productos)' : `sólo hacia ${direccion === 'forward' ? 'adelante (forward)' : 'atrás (backward)'}`}: hasta ${puntos} puntos por dirección, paso ${paso} bohr·amu½. La geometría debe ser un estado de transición.`);
+      if (!irc.direcciones.size) avisos.push('El archivo no indica irc_direction: se recorren las dos direcciones (Psi4, por defecto, sólo haría «forward»).');
+      if (hayFreq) avisos.push('Las frecuencias se omiten en el IRC: calcúlelas antes en el TS.');
+    } else if (esTS) {
       if (tarea === 'energia') avisos.push('«opt_type ts» sin optimize(…) ni frequency(…): se calcula sólo la energía.');
       else {
         tarea = 'ts';
@@ -207,7 +228,7 @@
     if (ignoradas.length) avisos.push(`Opciones ignoradas: ${ignoradas.slice(0, 6).join('; ')}${ignoradas.length > 6 ? '…' : ''}`);
     return {
       titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos,
-      mep: /\bcubeprop\s*\(/i.test(sinBloques),
+      mep: /\bcubeprop\s*\(/i.test(sinBloques), irc: opcionesIrc,
     };
   }
 
@@ -225,7 +246,7 @@
 
   const NOMBRE_BASE_PSI4 = { 'sto-3g': 'sto-3g', '3-21g': '3-21g', '6-31g': '6-31g', '6-31g*': '6-31g*', '6-31g**': '6-31g**', '6-31+g*': '6-31+g*', '6-311g**': '6-311g**', 'cc-pvdz': 'cc-pvdz', 'aug-cc-pvdz': 'aug-cc-pvdz', 'def2-svp': 'def2-svp', 'def2-tzvp': 'def2-tzvp' };
 
-  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date() }) {
+  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null }) {
     const nombre = String(titulo).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'molecula';
     const ref = Number(multiplicidad) === 1 ? 'rhf' : 'uhf';
     const llamadas = {
@@ -234,6 +255,19 @@
       frecuencias: [`optimize('${metodo}')`, `E, wfn = frequency('${metodo}', return_wfn=True)`],
       ts: ['# Búsqueda del estado de transición; las frecuencias deben dar una sola imaginaria',
         `optimize('${metodo}')`, `E, wfn = frequency('${metodo}', return_wfn=True)`],
+      // optking recorre una dirección por optimize(): se vuelve al TS entre recorridos
+      irc: [
+        '# Camino de reacción IRC desde el TS (cada optimize() recorre una dirección)',
+        `geom_ts = ${nombre}.geometry().clone()`,
+        ...((irc?.direccion || 'ambas') === 'ambas' ? ['backward', 'forward'] : [irc.direccion]).flatMap((d) => [
+          `set irc_direction ${d}`,
+          `optimize('${metodo}')`,
+          `${nombre}.set_geometry(geom_ts)`,
+          `${nombre}.update_geometry()`,
+        ]),
+        '# Función de onda en el TS',
+        `E, wfn = energy('${metodo}', return_wfn=True)`,
+      ],
     }[tarea];
     const lineasXYZ = String(xyz).trim().split(/\r?\n/).map((l) => {
       const [el, x, y, z] = l.trim().split(/\s+/);
@@ -261,6 +295,7 @@
       `  reference ${ref}`,
       '  scf_type df',
       ...(tarea === 'ts' ? ['  opt_type ts', '  full_hess_every 0'] : []),
+      ...(tarea === 'irc' ? ['  opt_type irc', `  irc_points ${irc?.puntos ?? 20}`, `  irc_step_size ${irc?.paso ?? 0.2}`, '  write_opt_history true'] : []),
       '}',
       '',
       ...llamadas,

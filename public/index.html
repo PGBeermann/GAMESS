@@ -154,6 +154,20 @@
         <label>Multiplicidad
           <input id="multiplicidad" type="number" min="1" max="5" step="1" value="1">
         </label>
+        <label class="solo-irc" hidden>Dirección del IRC
+          <select id="ircDireccion">
+            <option value="ambas">Ambas: reactivos ← TS → productos</option>
+            <option value="forward">Sólo hacia adelante (+)</option>
+            <option value="backward">Sólo hacia atrás (−)</option>
+          </select>
+        </label>
+        <label class="solo-irc" hidden>Puntos por dirección
+          <input id="ircPuntos" type="number" min="3" max="60" step="1" value="20">
+        </label>
+        <label class="solo-irc" hidden>Paso (bohr·amu½)
+          <input id="ircPaso" type="number" min="0.05" max="0.5" step="0.05" value="0.2">
+        </label>
+        <p class="nota solo-irc nota-irc" hidden>El IRC parte de un <b>estado de transición</b> (una sola frecuencia imaginaria) y sigue el camino de mínima energía hacia reactivos y productos. Calcule antes el TS con «Estado de transición (TS) + frecuencias» y use su botón «Calcular IRC desde este TS».</p>
         <label class="chk largo"><input type="checkbox" id="mep" checked> Calcular potencial electrostático (MEP)</label>
         <div class="acciones fin">
           <span class="info" id="estimacion"></span>

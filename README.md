@@ -27,6 +27,14 @@ el potencial electrostático y las vibraciones.
      activa con `set opt_type ts`, `set optking { opt_type ts }` u `optimizer_keywords`.
      Ojo: «Optimización» busca un **mínimo**; si se parte de un TS simétrico, el gradiente es ~0
      y converge sin mover los átomos (aparece una frecuencia imaginaria).
+   - **Camino de reacción IRC** (desde un TS): optking con `opt_type irc`. Como cada
+     `optimize()` recorre una sola dirección, se parte dos veces del TS (`backward` y `forward`)
+     y se unen los puntos: perfil de energía relativo al TS frente a la coordenada de reacción,
+     barreras desde cada extremo, animación reactivo → TS → producto y descarga como XYZ de
+     varios cuadros. Opciones: dirección (ambas / forward / backward), puntos por dirección
+     (3–60) y paso (0.05–0.5 bohr·amu½). Los puntos se leen del `.opt.json` que escribe Psi4
+     con `write_opt_history`. En un .in: `set opt_type irc`, `irc_direction`, `irc_points`,
+     `irc_step_size`. Tras un TS con una sola imaginaria aparece «Calcular IRC desde este TS».
 4. **Resultados**:
    - Energía total (E<sub>h</sub>, kcal/mol, eV) y sus componentes
    - Momento dipolar, cargas de Mulliken (también como colores y etiquetas en 3D)
