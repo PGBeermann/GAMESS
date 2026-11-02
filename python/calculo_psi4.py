@@ -93,12 +93,16 @@ def emitir_paso(paso, mol, gradiente):
 def optimizar(metodo, mol):
     """Optimiza la geometría y, si Psi4 lo permite, devuelve también la trayectoria.
 
-    Para mostrar la geometría en vivo se envuelve psi4.driver.driver.gradient, que el ciclo
-    de optimización de Psi4 llama una vez por paso. Si la envoltura no es posible, la
-    optimización funciona igual, sólo que sin actualizaciones intermedias.
+    Para mostrar la geometría en vivo se envuelve gradient(), que el ciclo de optimización de
+    Psi4 llama una vez por paso. Se reemplaza en el espacio de nombres de la propia función
+    optimize (optimize.__globals__), que es donde Psi4 la busca. Ojo: «psi4.driver» no sirve,
+    porque `from .driver import *` en psi4/__init__.py lo deja apuntando al módulo driver.py.
+    Si la envoltura no es posible, la optimización funciona igual, sin pasos intermedios.
     """
-    modulo = getattr(getattr(psi4, "driver", None), "driver", None)
-    original = getattr(modulo, "gradient", None)
+    espacio = getattr(psi4.optimize, "__globals__", None)
+    if not (isinstance(espacio, dict) and callable(espacio.get("gradient"))):
+        espacio = getattr(sys.modules.get("psi4.driver.driver"), "__dict__", None)
+    original = espacio.get("gradient") if isinstance(espacio, dict) else None
     pasos = [0]
 
     def gradiente_con_aviso(name, **kwargs):
@@ -111,7 +115,7 @@ def optimizar(metodo, mol):
         return salida
 
     if callable(original):
-        modulo.gradient = gradiente_con_aviso
+        espacio["gradient"] = gradiente_con_aviso
     historia = None
     try:
         try:
@@ -121,7 +125,7 @@ def optimizar(metodo, mol):
             energia = psi4.optimize(metodo, molecule=mol)
     finally:
         if callable(original):
-            modulo.gradient = original
+            espacio["gradient"] = original
     trayectoria = []
     if isinstance(historia, dict) and historia.get("coordinates"):
         simbolos = [mol.symbol(i).capitalize() for i in range(mol.natom())]
