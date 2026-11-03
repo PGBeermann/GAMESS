@@ -1840,7 +1840,7 @@ function panelScan(t, r) {
       <span id="infoPaso" class="nota"></span>
     </div>
     <div class="tabla-scroll"><table><thead><tr><th class="num">${S} (${U})</th><th class="num">${S} final (${U})</th><th class="num">E (E<sub>h</sub>)</th><th class="num">ΔE vs. 1.º (kcal/mol)</th><th class="num">ΔE vs. mín (kcal/mol)</th><th></th></tr></thead><tbody>
-      ${todos.map((p, i) => `<tr data-fila="${i}"><td class="num">${p.v.toFixed(dec)}</td><td class="num">${fx(p.vf, dec + 1)}</td><td class="num">${fx(p.energia, 8)}</td><td class="num">${fx(p.de_kcal, 3)}</td><td class="num">${fx(p.de_min_kcal, 3)}</td><td>${p.convergio ? '' : `<span class="aviso-chico" title="${esc(p.nota)}">no convergió</span>`}</td></tr>`).join('')}
+      ${todos.map((p, i) => `<tr data-fila="${i}"><td class="num">${p.v.toFixed(dec)}</td><td class="num">${fx(p.vf, dec + 1)}</td><td class="num">${fx(p.energia, 8)}</td><td class="num">${fx(p.de_kcal, 3)}</td><td class="num">${fx(p.de_min_kcal, 3)}</td><td>${p.convergio ? (p.nota ? `<span class="info" title="${esc(p.nota)}">≈ convergió en energía</span>` : '') : `<span class="aviso-chico" title="${esc(p.nota)}">no convergió</span>`}</td></tr>`).join('')}
     </tbody></table></div>
     <p class="nota">En cada punto ${nombreTipo} ${esc(sc.etiqueta)} queda fijo y el resto de la molécula se optimiza. La misma tabla está al final de la salida de Psi4 (.out), en «SCAN RELAJADO».</p>`;
   const verPaso = (i) => {

@@ -365,7 +365,8 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
             mol.set_geometry(psi4.core.Matrix.from_array(inicial))
             mol.update_geometry()
     psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom]), **pasos_cortos})
-    with en_vivo(mol, contador):
+    energias_pasos = []  # energía de cada paso (la registra en_vivo)
+    with en_vivo(mol, contador, energias_pasos):
         for n, valor in enumerate(valores, 1):
             etapa(f"Scan relajado {simbolo}({etiqueta}): punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
             previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()  # última geometría buena (bohr)
@@ -374,6 +375,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
                 mol.update_geometry()
                 colocar_coordenada(mol, tipo, idx, valor)
                 convergio, nota = True, ""
+                inicio = len(energias_pasos)
                 try:
                     energia = float(psi4.optimize(metodo, molecule=mol))
                 except Exception as e:  # noqa: BLE001
@@ -381,6 +383,12 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
                         raise
                     convergio, nota = False, mensaje_error(e)
                     energia = variable_global("CURRENT ENERGY")
+                    # Con una coordenada congelada, optking a veces no logra bajar la fuerza residual
+                    # aunque la energía ya no cambia: si los últimos pasos son estables, el punto vale.
+                    ultimas = [r["energia"] for r in energias_pasos[inicio:][-4:] if r.get("energia") is not None]
+                    if type(e).__name__ == "OptimizationConvergenceError" and len(ultimas) == 4 \
+                            and max(ultimas) - min(ultimas) < 2e-6:
+                        convergio, nota = True, "convergió en energía (quedó una fuerza residual por la restricción)"
                 sim, coords = geometria_actual(mol)
                 final = medir_coordenada(coords, tipo, idx)
                 desvio = abs(final - valor) if tipo != "diedro" else abs((final - valor + 180.0) % 360.0 - 180.0)
@@ -419,7 +427,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
         if p["energia"] is None:
             psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   sin energía ({p['nota']})\n")
             continue
-        aviso = "" if p["convergio"] else "   (no convergió)"
+        aviso = ("   (convergió en energía)" if p["nota"] else "") if p["convergio"] else "   (no convergió)"
         psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   E = {p['energia']:.10f} Eh   "
                             f"ΔE = {p['de_kcal']:8.3f} kcal/mol{aviso}\n")
     psi4.core.print_out("=" * 60 + "\n")
