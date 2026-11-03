@@ -17,6 +17,10 @@ el potencial electrostático y las vibraciones.
    del formulario abre el mismo editor con la molécula dibujada.
 2. **Generar la geometría 3D**: RDKit añade los hidrógenos, genera coordenadas (ETKDG) y las
    preoptimiza con MMFF94. Sugiere la carga y la multiplicidad.
+   En el visor, **«📏 Medir»**: clic en 2 átomos → distancia, 3 → ángulo (vértice en el 2.º),
+   4 → diedro (signo IUPAC). La medida se recalcula al cambiar la geometría (optimización en
+   vivo, IRC, scan) y un 5.º clic empieza otra. Las etiquetas muestran el índice de cada átomo
+   (el mismo que usan el scan y las medidas), sin fondo.
 3. **Configurar el cálculo**:
    - Métodos: HF, B3LYP, PBE0, ωB97X-D, M06-2X, MP2
    - Bases: STO-3G, 3-21G, 6-31G, 6-31G(d), 6-31G(d,p), 6-31+G(d), 6-311G(d,p), cc-pVDZ, aug-cc-pVDZ, def2-SVP, def2-TZVP

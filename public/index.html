@@ -87,10 +87,15 @@
         <label class="chk"><input type="checkbox" id="etiquetas"> Etiquetas</label>
         <label class="chk" id="ctrlCargas" hidden><input type="checkbox" id="colorCargas"> Color por carga</label>
         <div class="grupo-btn">
+          <button class="btn sec chico" id="medir" type="button" aria-pressed="false" title="Medir distancias (2 átomos), ángulos (3) y diedros (4) haciendo clic en los átomos">📏 Medir</button>
           <button class="btn sec chico" id="centrar" type="button" title="Centrar la vista">Centrar</button>
           <button class="btn sec chico" id="girar" type="button" title="Girar automáticamente">Girar</button>
           <button class="btn sec chico" id="png" type="button" title="Descargar imagen PNG">PNG</button>
         </div>
+      </div>
+      <div class="medida-info" id="medidaInfo" role="status" hidden>
+        <span id="medidaTexto"></span>
+        <button class="btn sec chico" id="medirLimpiar" type="button">Limpiar selección</button>
       </div>
       <div class="barra-vib" id="barraVib" hidden>
         <div class="fila-vib">

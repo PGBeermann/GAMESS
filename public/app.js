@@ -22,6 +22,7 @@ const estado = {
   opciones: null, geom: null, modificada: true, jsme: null, visor: null,
   trabajo: null, resultado: null, token: 0, reloj: null, inicio: null,
   modelo: null, cubos: new Map(), reproductor: null, girando: false, modoActivo: null, flechas: [],
+  medir: false, seleccion: [], medidaFormas: [], // medidas en el visor 3D
   vivo: null, vivoAnim: 0, molblocks: new Map(), // geometría en vivo durante la optimización
 };
 
@@ -166,15 +167,26 @@ function estiloActual() {
   }[$('#estilo').value];
 }
 
+// Etiqueta de texto sin fondo (sólo el texto, del color del tema)
+function etiquetaSinFondo(texto, pos, extra = {}) {
+  return estado.visor.addLabel(texto, {
+    position: { x: pos.x, y: pos.y, z: pos.z }, fontSize: 13, fontColor: varCSS('--texto') || '#16201a',
+    showBackground: false, backgroundOpacity: 0, inFront: true, alignment: 'center', ...extra,
+  });
+}
+
+// Etiquetas de los átomos: su índice (1, 2, 3…), el mismo que usan el scan y las medidas
 function ponerEtiquetas() {
   const v = estado.visor;
   v.removeAllLabels();
+  estado.medidaFormas = (estado.medidaFormas || []).filter((f) => f.tipo !== 'etiqueta'); // ya borradas
   if (!$('#etiquetas').checked || !v.getModel() || estado.modoActivo) return;
   const cargas = estado.resultado?.cargas_mulliken;
   const conCarga = $('#colorCargas').checked && cargas;
   v.getModel().selectedAtoms({}).forEach((a, i) => {
-    const txt = conCarga ? `${a.elem}${i + 1} ${cargas[i].carga >= 0 ? '+' : ''}${cargas[i].carga.toFixed(2)}` : `${a.elem}${i + 1}`;
-    v.addLabel(txt, { position: { x: a.x, y: a.y, z: a.z }, fontSize: 11, fontColor: 'black', backgroundColor: 'white', backgroundOpacity: 0.7, inFront: true, alignment: 'center' });
+    const q = conCarga && cargas[i] ? ` (${cargas[i].carga >= 0 ? '+' : ''}${cargas[i].carga.toFixed(2)})` : '';
+    // Un poco arriba a la derecha del átomo, para que se lea sobre la esfera
+    etiquetaSinFondo(`${i + 1}${q}`, a, { fontSize: 12, screenOffset: { x: 15, y: 15 } });
   });
 }
 
@@ -183,7 +195,133 @@ function aplicarEstilo() {
   if (!v.getModel()) return;
   v.setStyle({}, estiloActual());
   ponerEtiquetas();
+  v.setClickable({}, !!estado.medir, estado.medir ? alClicAtomo : null);
+  dibujarMedida(false);
   v.render();
+}
+
+// ---------- Medir distancias, ángulos y diedros ----------
+// Con «Medir» activo, cada clic en un átomo lo selecciona (máx. 4). 2 átomos → distancia,
+// 3 → ángulo (vértice en el 2.º), 4 → diedro. Se recalcula al cambiar la geometría.
+const COLOR_MEDIDA = '#d06400';
+const vec = (p, q) => [q.x - p.x, q.y - p.y, q.z - p.z];
+const punto = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cruz3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+const norma = (a) => Math.hypot(...a);
+
+function calcularMedida(P) {
+  if (P.length === 2) return norma(vec(P[0], P[1]));
+  if (P.length === 3) {
+    const a = vec(P[1], P[0]); const b = vec(P[1], P[2]);
+    return (Math.acos(Math.max(-1, Math.min(1, punto(a, b) / (norma(a) * norma(b))))) * 180) / Math.PI;
+  }
+  if (P.length === 4) {
+    // Diedro con el signo de la IUPAC (positivo en sentido horario mirando de 2 a 3)
+    const b0 = vec(P[1], P[0]); const b1 = vec(P[1], P[2]); const b2 = vec(P[2], P[3]);
+    const n1 = b1.map((x) => x / norma(b1));
+    const v = b0.map((x, k) => x - punto(b0, n1) * n1[k]);
+    const w = b2.map((x, k) => x - punto(b2, n1) * n1[k]);
+    return (Math.atan2(punto(cruz3(n1, v), w), punto(v, w)) * 180) / Math.PI;
+  }
+  return null;
+}
+
+function textoMedida(atomos, sel) {
+  const nombre = (i) => `${atomos[i]?.elem || ''}${i + 1}`;
+  const cadena = sel.map(nombre).join('–');
+  const P = sel.map((i) => atomos[i]);
+  const val = calcularMedida(P);
+  if (sel.length === 2) return { corto: `${val.toFixed(3)} Å`, largo: `Distancia ${cadena} = <span class="valor">${val.toFixed(4)} Å</span>` };
+  if (sel.length === 3) {
+    const d1 = norma(vec(P[1], P[0])); const d2 = norma(vec(P[1], P[2]));
+    return { corto: `${val.toFixed(1)}°`, largo: `Ángulo ${cadena} = <span class="valor">${val.toFixed(2)}°</span> <span class="info">(vértice ${nombre(sel[1])}; ${nombre(sel[0])}–${nombre(sel[1])} ${d1.toFixed(3)} Å, ${nombre(sel[1])}–${nombre(sel[2])} ${d2.toFixed(3)} Å)</span>` };
+  }
+  if (sel.length === 4) return { corto: `${val.toFixed(1)}°`, largo: `Diedro ${cadena} = <span class="valor">${val >= 0 ? '+' : '−'}${Math.abs(val).toFixed(2)}°</span>` };
+  return null;
+}
+
+function actualizarTextoMedida(atomos) {
+  const caja = $('#medidaInfo');
+  caja.hidden = !estado.medir;
+  if (!estado.medir) return;
+  const sel = estado.seleccion;
+  let html;
+  if (estado.modoActivo) html = 'Detenga la animación de la vibración para medir.';
+  else if (!atomos.length) html = 'Cargue una molécula para medir.';
+  else if (!sel.length) html = 'Haga clic en 2 átomos (distancia), 3 (ángulo) o 4 (diedro). Otro clic en un átomo seleccionado lo quita.';
+  else if (sel.length === 1) html = `Átomo ${atomos[sel[0]]?.elem || ''}${sel[0] + 1} seleccionado: elija otro (2 = distancia, 3 = ángulo, 4 = diedro).`;
+  else html = textoMedida(atomos, sel).largo + (sel.length < 4 ? ' <span class="info">· siga eligiendo para un ' + (sel.length === 2 ? 'ángulo' : 'diedro') + '</span>' : '');
+  $('#medidaTexto').innerHTML = html;
+}
+
+function borrarFormasMedida() {
+  const v = estado.visor;
+  for (const f of estado.medidaFormas || []) {
+    try { if (f.tipo === 'etiqueta') v.removeLabel(f.obj); else v.removeShape(f.obj); } catch { /* ya no existe */ }
+  }
+  estado.medidaFormas = [];
+}
+
+function dibujarMedida(render = true) {
+  const v = estado.visor;
+  borrarFormasMedida();
+  const atomos = estado.modoActivo ? [] : (v.getModel()?.selectedAtoms({}) || []);
+  if (estado.seleccion.some((i) => i >= atomos.length) && !estado.modoActivo) estado.seleccion = [];
+  actualizarTextoMedida(atomos);
+  const sel = estado.seleccion;
+  if (!estado.medir || !sel.length || !atomos.length) { if (render) v.render(); return; }
+  const P = sel.map((i) => atomos[i]);
+  const forma = (obj) => estado.medidaFormas.push({ tipo: 'forma', obj });
+  const etiqueta = (obj) => estado.medidaFormas.push({ tipo: 'etiqueta', obj });
+  // Halo un poco mayor que la esfera del átomo en el estilo actual, para que se vea
+  const vdw = { H: 1.2, C: 1.7, N: 1.55, O: 1.52, F: 1.47, P: 1.8, S: 1.8, Cl: 1.75, Br: 1.85, I: 1.98 };
+  const escala = { bolas: 0.27, esferas: 1.0 }[$('#estilo').value] || 0;
+  P.forEach((a, k) => {
+    const radio = Math.max(0.42, escala * (vdw[a.elem] || 1.7) + 0.18);
+    forma(v.addSphere({ center: { x: a.x, y: a.y, z: a.z }, radius: radio, color: COLOR_MEDIDA, opacity: 0.4 }));
+    // Índice del átomo seleccionado (si las etiquetas generales no lo muestran ya)
+    if (!$('#etiquetas').checked) etiqueta(etiquetaSinFondo(String(sel[k] + 1), a, { fontColor: COLOR_MEDIDA, fontSize: 14, screenOffset: { x: 15, y: 15 } }));
+  });
+  for (let k = 0; k < P.length - 1; k++) {
+    forma(v.addCylinder({ start: { x: P[k].x, y: P[k].y, z: P[k].z }, end: { x: P[k + 1].x, y: P[k + 1].y, z: P[k + 1].z }, radius: 0.03, color: COLOR_MEDIDA, dashed: true, fromCap: 1, toCap: 1 }));
+  }
+  if (P.length >= 2) {
+    // Valor junto al centro de los átomos elegidos (en el diedro, sobre el enlace central)
+    const base = P.length === 4 ? [P[1], P[2]] : P;
+    const c = { x: 0, y: 0, z: 0 };
+    base.forEach((a) => { c.x += a.x / base.length; c.y += a.y / base.length; c.z += a.z / base.length; });
+    etiqueta(etiquetaSinFondo(textoMedida(atomos, sel).corto, c, { fontColor: COLOR_MEDIDA, fontSize: 15, screenOffset: { x: 0, y: -30 } }));
+  }
+  if (render) v.render();
+}
+
+function alClicAtomo(atomo) {
+  if (!estado.medir || estado.modoActivo) return;
+  const i = Number.isInteger(atomo.index) ? atomo.index : (estado.visor.getModel()?.selectedAtoms({}) || []).indexOf(atomo);
+  if (i < 0) return;
+  const s = estado.seleccion;
+  const pos = s.indexOf(i);
+  if (pos >= 0) s.splice(pos, 1);
+  else {
+    if (s.length >= 4) s.length = 0; // un 5.º clic empieza una medida nueva
+    s.push(i);
+  }
+  dibujarMedida();
+}
+
+function alternarMedir() {
+  estado.medir = !estado.medir;
+  $('#medir').setAttribute('aria-pressed', String(estado.medir));
+  if (!estado.medir) estado.seleccion = [];
+  const v = estado.visor;
+  if (v.getModel()) v.setClickable({}, estado.medir, estado.medir ? alClicAtomo : null);
+  dibujarMedida();
+}
+
+// Molécula distinta: se descarta la selección
+function reiniciarMedida() {
+  estado.seleccion = [];
+  dibujarMedida();
 }
 
 function quitarFlechas() {
@@ -236,6 +374,7 @@ async function mostrarSuperficie() {
   const v = estado.visor;
   const tipo = $('#superficie').value;
   v.removeAllShapes();
+  dibujarMedida(false);
   const ley = $('#leyenda');
   const ctrl = $('#ctrlIso');
   const iso = parseFloat($('#isovalor').value);
@@ -279,6 +418,7 @@ function prepararSuperficies(cubos = []) {
   $('#ctrlIso').hidden = true;
   $('#leyenda').hidden = true;
   estado.visor.removeAllShapes();
+  dibujarMedida(); // removeAllShapes también borró las marcas de la medida
 }
 
 function ajustarDeslizador() {
@@ -308,6 +448,7 @@ async function generar3D() {
   $('#infoMolecula').textContent = 'Generando geometría 3D…';
   try {
     const g = await api('/api/geometria', { method: 'POST', body: JSON.stringify({ molfile, smiles }) });
+    estado.seleccion = []; // molécula nueva: la numeración de los átomos cambia
     estado.geom = g;
     estado.modificada = false;
     estado.resultado = null;
@@ -430,6 +571,7 @@ async function aplicarEditor(avisosExtra = []) {
       method: 'POST', body: JSON.stringify({ xyz: datos.xyz, carga: datos.carga, multiplicidad: datos.multiplicidad }),
     });
     estado.geom = { ...g, archivo: nombre, claveEntrada: clave };
+    estado.seleccion = [];
     estado.modificada = false;
     estado.resultado = null;
     detenerVibracion();
@@ -1767,6 +1909,8 @@ function eventos() {
   $('#centrar').addEventListener('click', () => { estado.visor.zoomTo(); estado.visor.render(); });
   $('#girar').addEventListener('click', () => { estado.girando = !estado.girando; estado.visor.spin(estado.girando ? 'y' : false); });
   $('#png').addEventListener('click', () => descargar(estado.visor.pngURI(), 'molecula.png'));
+  $('#medir').addEventListener('click', alternarMedir);
+  $('#medirLimpiar').addEventListener('click', reiniciarMedida);
 
   // Barra «Vibración» del visor
   $('#vibPlay').addEventListener('click', () => {

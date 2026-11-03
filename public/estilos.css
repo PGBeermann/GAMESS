@@ -159,6 +159,12 @@ kbd { font-family: var(--mono); font-size: .8em; padding: 1px 5px; border: 1px s
 .barra-visor { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 10px; font-size: .9rem; }
 .barra-visor label { display: flex; align-items: center; gap: 6px; }
 .barra-visor .grupo-btn { margin-left: auto; }
+.btn[aria-pressed="true"] { background: var(--verde); color: #fff; border-color: var(--verde); }
+.medida-info { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; padding: 8px 12px; border: 1px solid var(--borde); border-left: 4px solid #e07b00; border-radius: 8px; background: var(--codigo); font-size: .9rem; }
+.medida-info #medidaTexto { flex: 1; min-width: 0; }
+.medida-info .valor { font-family: var(--mono); font-weight: 700; color: #b85f00; }
+:root[data-theme="dark"] .medida-info .valor { color: #ffae4d; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .medida-info .valor { color: #ffae4d; } }
 .chk { display: flex; align-items: center; gap: 6px; }
 .barra-vib {
   margin-top: 10px; padding: 10px 12px; border: 1px solid var(--borde); border-radius: 8px;
