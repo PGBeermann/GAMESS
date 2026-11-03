@@ -512,7 +512,7 @@ def iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base):
             psi4.core.clean()
             nombres.append(nombre)
             ts = abs(p["s"]) < 1e-9
-            filas.append(f"{nombre}   s = {p['s']:+8.3f}   E(IRC) = {p['energia']:.8f} Eh   "
+            filas.append(f"{nombre}   s = {p['s'] + 0.0:+8.3f}   E(IRC) = {p['energia']:.8f} Eh   "
                          f"ΔE = {p['de_kcal']:+8.2f} kcal/mol{'   ← TS' if ts else ''}")
             lineas = p["xyz"].strip().splitlines()
             marcos.append(f"{len(lineas)}\n{nombre} s={p['s']:+.3f} E={p['energia']:.8f}{' TS' if ts else ''}\n" + "\n".join(lineas))

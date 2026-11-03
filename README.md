@@ -56,6 +56,14 @@ el potencial electrostático y las vibraciones.
      CSV/XYZ. «Usar átomos de «Medir»» copia los átomos elegidos en el visor. Se lee de un .in
      con `fixed_/frozen_/ranged_distance|bend|dihedral` y un bucle `for` (lista, `np.arange`,
      `np.linspace`).
+   - **Archivos para IboView** (casilla «Orbitales para IboView», activa por defecto): cada cálculo
+     escribe `orbitales.molden` (función de onda SCF/KS en formato Molden con `psi4.molden`);
+     IboView construye con ella los orbitales intrínsecos de enlace (IBO). Con MP2 de capa cerrada,
+     además `naturales.molden` (orbitales naturales de la densidad MP2 relajada). En un IRC se
+     escribe un `.molden` por punto (`irc_001…`, reactivo → TS → producto) en `irc_iboview.zip`,
+     con `irc.xyz` y `LEAME.txt`: se abren todos a la vez en IboView como cuadros de una
+     trayectoria para seguir el flujo de electrones del mecanismo. Los coeficientes cumplen
+     CᵀSC = I con la convención estándar de Molden (comprobado en bases cartesianas y esféricas).
    - **El servidor no ejecuta el código Python de un .in** (seguridad): interpreta la molécula,
      el nivel de teoría y el tipo de cálculo, y avisa si el archivo trae código que no se ejecuta.
 4. **Resultados**:
