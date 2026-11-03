@@ -515,7 +515,7 @@ def iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base):
             filas.append(f"{nombre}   s = {p['s'] + 0.0:+8.3f}   E(IRC) = {p['energia']:.8f} Eh   "
                          f"ΔE = {p['de_kcal']:+8.2f} kcal/mol{'   ← TS' if ts else ''}")
             lineas = p["xyz"].strip().splitlines()
-            marcos.append(f"{len(lineas)}\n{nombre} s={p['s']:+.3f} E={p['energia']:.8f}{' TS' if ts else ''}\n" + "\n".join(lineas))
+            marcos.append(f"{len(lineas)}\n{nombre} s={p['s'] + 0.0:+.3f} E={p['energia']:.8f}{' TS' if ts else ''}\n" + "\n".join(lineas))
     finally:
         mol.set_geometry(psi4.core.Matrix.from_array(geom_ts))
         mol.update_geometry()
