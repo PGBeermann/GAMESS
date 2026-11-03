@@ -48,7 +48,9 @@ el potencial electrostático y las vibraciones.
      reemplaza al «Tipo de cálculo». Valores desde/hasta/paso (hasta 40 puntos). En cada punto se
      coloca el valor moviendo rígidamente el fragmento del último átomo (traslación o rotación de
      Rodrigues), se congela con `frozen_distance` / `frozen_bend` / `frozen_dihedral` (optking 0.5
-     ya no tiene `fixed_*`) y se optimiza el resto, partiendo del punto anterior. La salida de
+     ya no tiene `fixed_*`) y se optimiza el resto, partiendo del punto anterior. Antes del primer
+     punto se optimiza la geometría sin restricciones; el scan usa pasos cortos de optking y, si la
+     coordenada congelada se desvía, repite el punto con pasos aún más cortos. La salida de
      Psi4 (.out) termina con la tabla «SCAN RELAJADO» (valor, E, ΔE) escrita con
      `psi4.core.print_out`; la página muestra la curva, la tabla, la animación y descargas
      CSV/XYZ. «Usar átomos de «Medir»» copia los átomos elegidos en el visor. Se lee de un .in

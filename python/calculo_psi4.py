@@ -352,6 +352,18 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
     # desvía al pasar de coordenadas internas a cartesianas y la molécula puede deformarse.
     pasos_cortos = {"intrafrag_step_limit": 0.2, "intrafrag_step_limit_max": 0.3}
     tolerancia = 0.01 if tipo == "distancia" else 0.5  # Å o grados
+    with en_vivo(mol, contador):
+        # El scan parte de una geometría optimizada con este método (la de MMFF no es un mínimo
+        # aquí): así cada punto es un desplazamiento pequeño y optking converge en pocos pasos.
+        etapa(f"Scan relajado {simbolo}({etiqueta}): optimizando primero la geometría de partida")
+        inicial = a_numpy(mol.geometry()).reshape(-1, 3).copy()
+        try:
+            psi4.optimize(metodo, molecule=mol)
+        except Exception as e:  # noqa: BLE001
+            if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
+                raise
+            mol.set_geometry(psi4.core.Matrix.from_array(inicial))
+            mol.update_geometry()
     psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom]), **pasos_cortos})
     with en_vivo(mol, contador):
         for n, valor in enumerate(valores, 1):
@@ -393,7 +405,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
               [p for p in puntos if p["energia"] is not None]
     if not validos:
         raise RuntimeError("Ningún punto del scan produjo una energía.")
-    e_ref = validos[0]["energia"]
+    e_ref = next(p["energia"] for p in puntos if p["energia"] is not None)  # primer punto, como dice la tabla
     e_min = min(p["energia"] for p in validos)
     for p in puntos:
         p["de_kcal"] = None if p["energia"] is None else (p["energia"] - e_ref) * HARTREE_KCAL
