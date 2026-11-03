@@ -248,18 +248,38 @@ RADIOS_COV = {"H": 0.31, "He": 0.28, "Li": 1.28, "Be": 0.96, "B": 0.84, "C": 0.7
               "Cl": 1.02, "Ar": 1.06, "K": 2.03, "Ca": 1.76, "Br": 1.20, "I": 1.39}
 
 
-def fragmento_unido(x, simbolos, desde, corte):
-    """Átomos unidos a `desde` si se corta el enlace `corte` (par de índices desde 0)."""
+def vecinos_covalentes(x, simbolos):
+    """Lista de vecinos enlazados de cada átomo (distancia < 1.2 × suma de radios covalentes)."""
     n = len(simbolos)
     radio = [RADIOS_COV.get(s, 1.5) for s in simbolos]
-    fragmento, pila = {desde}, [desde]
-    while pila:
-        a = pila.pop()
-        for b in range(n):
-            if b not in fragmento and {a, b} != set(corte) and np.linalg.norm(x[a] - x[b]) < 1.2 * (radio[a] + radio[b]):
-                fragmento.add(b)
-                pila.append(b)
-    return fragmento
+    return [[b for b in range(n) if b != a and np.linalg.norm(x[a] - x[b]) < 1.2 * (radio[a] + radio[b])]
+            for a in range(n)]
+
+
+def grupo_movil(vecinos, movil, fijos):
+    """El átomo `movil` y todo lo que cuelga de él.
+
+    Se quita `movil` del grafo de enlaces: cada trozo que queda separado y no contiene ningún
+    átomo fijo (sus H, un CH3, un OH…) se mueve con él. Así funciona también cuando los átomos
+    del scan están unidos por otro camino (un enlace de un anillo, o una distancia no enlazada
+    dentro de la misma molécula): el átomo se desplaza con sus sustituyentes y el resto se queda.
+    """
+    fijos = set(fijos)
+    grupo, vistos = {movil}, {movil}
+    for v in vecinos[movil]:
+        if v in vistos:
+            continue
+        trozo, pila = {v}, [v]
+        while pila:
+            a = pila.pop()
+            for b in vecinos[a]:
+                if b != movil and b not in trozo:
+                    trozo.add(b)
+                    pila.append(b)
+        vistos |= trozo
+        if not trozo & fijos:
+            grupo |= trozo
+    return grupo
 
 
 def rotar(puntos, origen, eje, angulo):
@@ -286,27 +306,25 @@ def medir_coordenada(x, tipo, idx):
 def colocar_coordenada(mol, tipo, idx, valor):
     """Pone la coordenada en `valor` moviendo rígidamente el fragmento del último átomo.
 
-    distancia i–j: se traslada el fragmento de j a lo largo de i→j.
-    ángulo i–j–k (vértice j): se gira el fragmento de k en el plano i–j–k, alrededor de j.
-    diedro i–j–k–l: se gira todo el lado de k (con l) alrededor del enlace j–k.
-    Si los átomos están en un anillo, sólo se mueve el último átomo.
+    distancia i–j: se traslada j con lo que cuelga de él, a lo largo de i→j.
+    ángulo i–j–k (vértice j): se gira k con lo que cuelga de él, en el plano i–j–k, alrededor de j.
+    diedro i–j–k–l: se gira el lado de k (l incluido) alrededor del enlace j–k; si j–k está en
+    un anillo, se gira l con lo que cuelga de él.
+    Los sustituyentes del átomo que se mueve (sus H, etc.) siempre lo acompañan.
     """
     simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
     x = a_numpy(mol.geometry()).reshape(-1, 3) * BOHR_ANG
+    vecinos = vecinos_covalentes(x, simbolos)
     if tipo == "distancia":
         i, j = idx
-        frag = fragmento_unido(x, simbolos, j, (i, j))
-        if i in frag:
-            frag = {j}
+        frag = grupo_movil(vecinos, j, {i})
         v = x[j] - x[i]
         d = float(np.linalg.norm(v))
         for k in frag:
             x[k] += (valor - d) * v / d
     elif tipo == "angulo":
         i, j, k = idx
-        frag = fragmento_unido(x, simbolos, k, (j, k))
-        if i in frag or j in frag:
-            frag = {k}
+        frag = grupo_movil(vecinos, k, {i, j})
         eje = np.cross(x[i] - x[j], x[k] - x[j])
         if np.linalg.norm(eje) < 1e-8:  # ángulo de 180°: cualquier perpendicular sirve
             eje = np.cross(x[k] - x[j], [1.0, 0.0, 0.0])
@@ -317,9 +335,11 @@ def colocar_coordenada(mol, tipo, idx, valor):
         x[lista] = rotar(x[lista], x[j], eje, delta)
     else:
         i, j, k, l = idx
-        frag = fragmento_unido(x, simbolos, k, (j, k)) - {k}
-        if j in frag or i in frag:
-            frag = {l}
+        # Lado de k: lo que cuelga de k (sin k, que está en el eje); si l no está ahí (anillo),
+        # se gira l con lo que cuelga de él
+        frag = grupo_movil(vecinos, k, {i, j}) - {k}
+        if l not in frag:
+            frag = grupo_movil(vecinos, l, {i, j, k})
         delta = np.radians(valor - medir_coordenada(x, "diedro", idx))
         lista = sorted(frag)
         x[lista] = rotar(x[lista], x[k], x[k] - x[j], delta)
