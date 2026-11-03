@@ -460,6 +460,93 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
             "no_convergidos": sum(1 for p in puntos if not p["convergio"])}
 
 
+# ---------- Archivos para IboView (formato Molden) ----------
+# IboView lee la función de onda (base + orbitales) en formato Molden y construye él mismo los
+# orbitales intrínsecos de enlace (IBO) a partir de los orbitales ocupados. Para un IRC se escribe
+# un .molden por punto: IboView los carga como cuadros de una trayectoria y alinea los IBO entre
+# cuadros, lo que permite seguir el flujo de electrones del mecanismo.
+
+def archivos_iboview(metodo, mol, scf, carpeta, mult, datos_irc, titulo, base):
+    info = {}
+    psi4.molden(scf, str(carpeta / "orbitales.molden"))
+    info["orbitales"] = True
+    if metodo == "mp2":
+        if mult != 1:
+            info["aviso_naturales"] = "Orbitales naturales MP2 sólo para capa cerrada (multiplicidad 1)."
+        else:
+            try:
+                # Orbitales naturales de la densidad MP2 relajada (como en la documentación de psi4.molden)
+                etapa("Orbitales naturales MP2 (densidad relajada) para IboView")
+                _, wfn_p = psi4.properties("mp2", properties=["dipole"], molecule=mol, return_wfn=True)
+                sca = psi4.core.doublet(wfn_p.S(), wfn_p.Ca(), False, False)
+                da_mo = psi4.core.triplet(sca, wfn_p.Da(), sca, True, False, False)
+                psi4.molden(wfn_p, str(carpeta / "naturales.molden"), density_a=da_mo)
+                info["naturales"] = True
+            except Exception as e:  # noqa: BLE001
+                info["aviso_naturales"] = f"No se pudieron calcular los orbitales naturales MP2: {mensaje_error(e)}"
+    if datos_irc and datos_irc.get("puntos"):
+        info.update(iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base))
+    return info
+
+
+def iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base):
+    """Un .molden por punto del IRC (reactivo → TS → producto), empaquetados en irc_iboview.zip."""
+    import shutil
+    import zipfile
+
+    metodo_scf = "hf" if metodo == "mp2" else metodo  # los IBO salen de los orbitales SCF
+    pts = sorted(datos_irc["puntos"], key=lambda p: p["s"])
+    geom_ts = a_numpy(mol.geometry()).reshape(-1, 3).copy()
+    dir_m = carpeta / "irc_molden"
+    dir_m.mkdir(exist_ok=True)
+    nombres, filas, marcos = [], [], []
+    try:
+        for k, p in enumerate(pts, 1):
+            etapa(f"Archivos para IboView: función de onda del punto {k} de {len(pts)} del IRC")
+            coords = np.array([[float(v) for v in l.split()[1:4]] for l in p["xyz"].splitlines()])
+            mol.set_geometry(psi4.core.Matrix.from_array(coords / BOHR_ANG))
+            mol.update_geometry()
+            _, w = psi4.energy(metodo_scf, return_wfn=True, molecule=mol)
+            nombre = f"irc_{k:03d}.molden"
+            psi4.molden(funcion_scf(w), str(dir_m / nombre))
+            psi4.core.clean()
+            nombres.append(nombre)
+            ts = abs(p["s"]) < 1e-9
+            filas.append(f"{nombre}   s = {p['s']:+8.3f}   E(IRC) = {p['energia']:.8f} Eh   "
+                         f"ΔE = {p['de_kcal']:+8.2f} kcal/mol{'   ← TS' if ts else ''}")
+            lineas = p["xyz"].strip().splitlines()
+            marcos.append(f"{len(lineas)}\n{nombre} s={p['s']:+.3f} E={p['energia']:.8f}{' TS' if ts else ''}\n" + "\n".join(lineas))
+    finally:
+        mol.set_geometry(psi4.core.Matrix.from_array(geom_ts))
+        mol.update_geometry()
+    nota_mp2 = ("\nLa función de onda de cada punto es la HF de referencia del MP2: los IBO se construyen\n"
+                "a partir de orbitales SCF.\n") if metodo == "mp2" else ""
+    leame = f"""Archivos para IboView — IRC de «{titulo}» ({metodo.upper()}/{base})
+
+irc_001.molden … {nombres[-1]}: función de onda (base y orbitales, formato Molden) en cada punto
+del camino de reacción, en orden: reactivo (s < 0) → estado de transición (s = 0) → producto (s > 0).
+{nota_mp2}
+Cómo verlos en IboView
+  1. Descomprima esta carpeta.
+  2. En IboView, abra TODOS los irc_*.molden a la vez (selección múltiple en el diálogo de abrir).
+     IboView los carga como cuadros (frames) de una misma trayectoria, calcula los orbitales
+     intrínsecos de enlace (IBO) en cada cuadro y los alinea entre cuadros.
+  3. Recorra o reproduzca los cuadros y siga los IBO que cambian (los que se forman, se rompen o
+     se desplazan): ese es el flujo de electrones del mecanismo.
+
+irc.xyz: las mismas geometrías en un solo archivo XYZ de varios cuadros (Avogadro, Jmol, VMD).
+
+Puntos del IRC (ΔE respecto al TS):
+""" + "\n".join(filas) + "\n"
+    with zipfile.ZipFile(carpeta / "irc_iboview.zip", "w", zipfile.ZIP_DEFLATED) as z:
+        for n in nombres:
+            z.write(dir_m / n, f"irc_iboview/{n}")
+        z.writestr("irc_iboview/irc.xyz", "\n".join(marcos) + "\n")
+        z.writestr("irc_iboview/LEAME.txt", leame)
+    shutil.rmtree(dir_m, ignore_errors=True)
+    return {"irc_zip": True, "irc_puntos": len(nombres)}
+
+
 def propiedades_scf(scf, n_atomos, simbolos):
     res = {}
     # Dipolo y cargas de Mulliken
@@ -735,6 +822,13 @@ def main():
                                                    bool(entrada.get("mep")))
             except Exception as e:  # noqa: BLE001
                 resultado["aviso_cubos"] = mensaje_error(e)
+        if entrada.get("molden", True):
+            etapa("Escribiendo los orbitales para IboView (.molden)")
+            try:
+                resultado["iboview"] = archivos_iboview(metodo, mol, scf, carpeta, mult, resultado.get("irc"),
+                                                        entrada.get("titulo", "molecula"), base)
+            except Exception as e:  # noqa: BLE001
+                resultado["aviso_iboview"] = f"No se pudieron escribir los archivos para IboView: {mensaje_error(e)}"
         resultado["ok"] = True
     except Exception as e:  # noqa: BLE001
         resultado["error"] = mensaje_error(e, tarea)

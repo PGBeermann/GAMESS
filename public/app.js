@@ -52,6 +52,17 @@ async function api(ruta, opciones = {}) {
   return datos;
 }
 
+// Descarga un archivo binario del servidor (p. ej. el .zip para IboView) con la clave de acceso
+async function descargarBinario(ruta, nombre) {
+  const clave = leerLS(LS_CLAVE, '');
+  const r = await fetch(ruta, { headers: clave ? { 'x-clave-acceso': clave } : {} });
+  if (!r.ok) throw new Error(r.status === 404 ? 'El archivo no está disponible (¿se calculó con la opción de IboView?).' : `Error ${r.status}`);
+  const url = URL.createObjectURL(await r.blob());
+  const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
 function descargar(contenido, nombre, tipo = 'text/plain') {
   const url = contenido.startsWith?.('data:') ? contenido : URL.createObjectURL(new Blob([contenido], { type: tipo }));
   const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
@@ -625,6 +636,7 @@ function ponerFormulario(datos, tituloPorDefecto = '') {
   }
   mostrarOpcionesIRC();
   if (datos.mep) $('#mep').checked = true;
+  if (datos.molden) $('#molden').checked = true;
 }
 
 async function abrirArchivo(archivo) {
@@ -641,7 +653,7 @@ async function abrirArchivo(archivo) {
       texto = generarEntradaPsi4({
         titulo: x.titulo || archivo.name.replace(/\.[^.]+$/, ''), xyz: x.xyz, carga: 0, multiplicidad: 1,
         metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: tareaEfectiva() || 'energia',
-        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true),
+        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, molden: $('#molden').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true),
       });
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
     }
@@ -801,7 +813,7 @@ function codigoDesdeFormulario() {
   const texto = generarEntradaPsi4({
     titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
     metodo: $('#metodo').value, base: $('#base').value, tarea,
-    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
+    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, molden: $('#molden').checked, irc: opcionesIRCForm(),
     scan: tarea === 'scan' ? opcionesScanForm() : null,
   });
   return { texto, nombre: `${nombreSeguro(titulo)}.in` };
@@ -937,6 +949,12 @@ async function guardarArchivoTrabajo(cual) {
       descargar(texto, `${nombre}.in`);
     } else if (cual === 'xyz') {
       descargar(await api(`/api/calculos/${t.id}/archivo/geometria.xyz`), `${nombre}_final.xyz`);
+    } else if (cual === 'molden') {
+      descargar(await api(`/api/calculos/${t.id}/archivo/orbitales.molden`), `${nombre}.molden`);
+    } else if (cual === 'naturales') {
+      descargar(await api(`/api/calculos/${t.id}/archivo/naturales.molden`), `${nombre}_naturales_MP2.molden`);
+    } else if (cual === 'ibo-irc') {
+      await descargarBinario(`/api/calculos/${t.id}/archivo/irc_iboview.zip`, `${nombre}_IRC_IboView.zip`);
     }
   } catch (e) {
     alert(e.message);
@@ -954,6 +972,7 @@ async function lanzarCalculo() {
     metodo: $('#metodo').value, base: $('#base').value, tarea: tareaEfectiva(),
     carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
     mep: $('#mep').checked,
+    molden: $('#molden').checked,
     irc: tareaEfectiva() === 'irc' ? opcionesIRCForm() : undefined,
     scan: tareaEfectiva() === 'scan' ? opcionesScanForm() : undefined,
   };
@@ -1643,7 +1662,7 @@ async function calcularFrecuencias(boton) {
         xyz: r.geometria_xyz, formula: t.formula, smiles: t.smiles || '',
         titulo: `${t.titulo} (frecuencias)`.slice(0, 80),
         metodo: r.metodo, base: r.base, tarea: 'frecuencias',
-        carga: r.carga, multiplicidad: r.multiplicidad, mep: (r.cubos || []).includes('mep'),
+        carga: r.carga, multiplicidad: r.multiplicidad, mep: (r.cubos || []).includes('mep'), molden: $('#molden').checked,
       }),
     });
     guardarEnHistorial(nuevo);
@@ -1755,6 +1774,7 @@ function panelIRC(t, r) {
       <button class="btn sec chico" type="button" id="reproducirOpt">▶ Reproducir reacción</button>
       <label>Punto <input type="range" id="pasoOpt" min="0" max="${pts.length - 1}" value="${Math.max(its, 0)}"></label>
       <button class="btn sec chico" type="button" id="bajarIRC" title="Todos los puntos del camino como XYZ de varios cuadros (Avogadro, Jmol, VMD)">IRC como XYZ animado</button>
+      ${r.iboview?.irc_zip ? '<button class="btn chico" type="button" data-guardar="ibo-irc" title="Un .molden por punto del IRC para animar los IBO en IboView">IRC para IboView (.zip)</button>' : ''}
       <span id="infoPaso" class="nota"></span>
     </div>
     <p class="nota">${pts.length} puntos del camino de mínima energía (coordenadas ponderadas por masa). El TS está en s = 0; los extremos se acercan a los mínimos de reactivos y productos. Para energías exactas de reactivos y productos, optimice la geometría de cada extremo.</p>`;
@@ -1904,7 +1924,7 @@ async function calcularIRC(boton) {
         xyz: r.geometria_xyz, formula: t.formula, smiles: t.smiles || '',
         titulo: `${t.titulo} (IRC)`.slice(0, 80),
         metodo: r.metodo, base: r.base, tarea: 'irc', irc: opcionesIRCForm(),
-        carga: r.carga, multiplicidad: r.multiplicidad, mep: false,
+        carga: r.carga, multiplicidad: r.multiplicidad, mep: false, molden: $('#molden').checked,
       }),
     });
     guardarEnHistorial(nuevo);
@@ -1915,6 +1935,22 @@ async function calcularIRC(boton) {
   }
 }
 
+// Botones e instrucciones para IboView (orbitales intrínsecos de enlace)
+function bloqueIboView(r) {
+  const ib = r.iboview;
+  if (!ib) return r.aviso_iboview ? `<p class="nota">${esc(r.aviso_iboview)}</p>` : '';
+  return `<h3 class="sub-iboview">Para IboView (orbitales intrínsecos de enlace)</h3>
+    <div class="grupo-btn">
+      <button class="btn sec" type="button" data-guardar="molden">Orbitales (.molden)</button>
+      ${ib.naturales ? '<button class="btn sec" type="button" data-guardar="naturales">Orbitales naturales MP2 (.molden)</button>' : ''}
+      ${ib.irc_zip ? `<button class="btn" type="button" data-guardar="ibo-irc">IRC para IboView (.zip, ${ib.irc_puntos} archivos .molden)</button>` : ''}
+    </div>
+    <p class="nota">IboView lee la función de onda (base y orbitales) y construye él mismo los IBO a partir de los orbitales ocupados.
+    ${ib.irc_zip ? 'Para el mecanismo: descomprima el .zip y abra en IboView <b>todos</b> los <code>irc_*.molden</code> a la vez; se cargan como cuadros de una trayectoria (reactivo → TS → producto) y los IBO se alinean entre cuadros, de modo que se ve el flujo de electrones. Las instrucciones están en <code>LEAME.txt</code>.' : ''}
+    ${ib.naturales ? ' Los orbitales naturales MP2 vienen de la densidad MP2 relajada; sus ocupaciones (≈2, ≈0 y valores intermedios) indican la correlación electrónica.' : (r.metodo !== 'mp2' ? ' Con HF o DFT, los orbitales naturales coinciden con los canónicos (ocupaciones 2 y 0).' : '')}
+    ${ib.aviso_naturales ? `<br>${esc(ib.aviso_naturales)}` : ''}</p>`;
+}
+
 function panelArchivos(t, r) {
   const panel = $('[data-panel="archivos"]');
   panel.innerHTML = `<div class="grupo-btn">
@@ -1923,6 +1959,7 @@ function panelArchivos(t, r) {
       <button class="btn sec" type="button" data-guardar="xyz">Geometría final (.xyz)</button>
       <button class="btn sec" type="button" id="verSalida">Mostrar salida completa</button>
     </div>
+    ${bloqueIboView(r)}
     <p class="nota">El archivo <b>.out</b> es la salida completa de Psi4 (energías, iteraciones, geometrías, frecuencias, termoquímica). El <b>.in</b> reproduce este cálculo: puede ejecutarlo en su computadora con <code>psi4 ${esc(nombreSeguro(t.titulo))}.in</code> o volver a abrirlo aquí. Identificador del cálculo: <code>${esc(t.id)}</code>. Los resultados se guardan en el servidor durante un tiempo limitado.</p>
     <pre class="salida-completa" id="salidaCompleta" hidden></pre>`;
   panel.onclick = async (ev) => {

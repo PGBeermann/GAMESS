@@ -240,12 +240,12 @@
     }
     return {
       titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos,
-      mep: /\bcubeprop\s*\(/i.test(sinBloques), irc: opcionesIrc, scan: opcionesScan,
+      mep: /\bcubeprop\s*\(/i.test(sinBloques), molden: /\bmolden\s*\(/i.test(sinBloques), irc: opcionesIrc, scan: opcionesScan,
     };
   }
 
   // Líneas que el lector sí entiende (o que genera esta misma aplicación)
-  const LINEA_CONOCIDA = /^(set\b|memory\b|E\s*,\s*wfn\s*=|geom_ts\s*=|oeprop\s*\(|cubeprop\s*\(|[\w.]+\.(set_geometry|update_geometry)\s*\()|\b(energy|optimize|opt|frequency|frequencies|freq|properties|prop|gradient|hessian)\s*\(/i;
+  const LINEA_CONOCIDA = /^(set\b|memory\b|E\s*,\s*wfn\s*=|geom_ts\s*=|oeprop\s*\(|cubeprop\s*\(|molden\s*\(|[\w.]+\.(set_geometry|update_geometry)\s*\()|\b(energy|optimize|opt|frequency|frequencies|freq|properties|prop|gradient|hessian)\s*\(/i;
 
   const numeros = (s) => (String(s).match(/-?\d+(?:\.\d+)?(?:[eE]-?\d+)?/g) || []).map(Number);
 
@@ -449,7 +449,7 @@
     ];
   }
 
-  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null }) {
+  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null, molden = false }) {
     const nombre = String(titulo).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'molecula';
     const ref = Number(multiplicidad) === 1 ? 'rhf' : 'uhf';
     const llamadas = {
@@ -505,6 +505,9 @@
       ...llamadas,
       '',
       "oeprop(wfn, 'DIPOLE', 'MULLIKEN_CHARGES', title='SCF')",
+      ...(molden ? ['', '# Función de onda en formato Molden para IboView (que construye los orbitales intrínsecos de enlace, IBO)',
+        "molden(wfn, 'orbitales.molden')",
+        ...(tarea === 'irc' ? ['# El servidor escribe además un .molden por punto del IRC (irc_iboview.zip) para animarlo en IboView'] : [])] : []),
       ...(mep ? ['', "# Superficies para visualizar (HOMO, LUMO, densidad y potencial electrostático)", "set cubeprop_tasks ['orbitals', 'esp']", 'cubeprop(wfn)'] : []),
       '',
     ].join('\n');

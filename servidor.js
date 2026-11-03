@@ -100,7 +100,8 @@ const Z = Object.fromEntries(
     .split(' ').map((s, i) => [s, i + 1]).concat([['I', 53]]),
 );
 const { generarEntradaPsi4 } = require('./public/entrada.js');
-const ARCHIVOS_PERMITIDOS = new Set(['salida.dat', 'entrada.in', 'geometria.xyz', 'homo.cube', 'lumo.cube', 'densidad.cube', 'mep.cube']);
+const ARCHIVOS_PERMITIDOS = new Set(['salida.dat', 'entrada.in', 'geometria.xyz', 'homo.cube', 'lumo.cube', 'densidad.cube', 'mep.cube',
+  'orbitales.molden', 'naturales.molden', 'irc_iboview.zip']); // los .molden y el .zip son para IboView
 
 // ---------- Estado de los trabajos ----------
 /** @type {Map<string, any>} */
@@ -401,12 +402,12 @@ app.post('/api/calculos', async (req, res) => {
     await fsp.mkdir(carpetaDe(id), { recursive: true });
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.json'), JSON.stringify({
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      mep: b.mep !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan,
+      mep: b.mep !== false, molden: b.molden !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan,
     }));
     // Entrada .in equivalente, para descargarla y ejecutarla con Psi4 fuera del servidor
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), generarEntradaPsi4({
       titulo, xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      memoria: CONFIG.memoria, mep: b.mep !== false, irc, scan,
+      memoria: CONFIG.memoria, mep: b.mep !== false, molden: b.molden !== false, irc, scan,
     }));
     trabajos.set(id, t);
     await guardarMeta(t);
@@ -465,7 +466,7 @@ app.get('/api/calculos/:id/archivo/:nombre', (req, res) => {
   if (!ARCHIVOS_PERMITIDOS.has(nombre)) return res.status(404).json({ error: 'Archivo no disponible.' });
   const ruta = path.join(carpetaDe(t.id), nombre);
   if (!fs.existsSync(ruta)) return res.status(404).json({ error: 'Archivo no disponible.' });
-  res.type('text/plain; charset=utf-8');
+  res.type(nombre.endsWith('.zip') ? 'application/zip' : 'text/plain; charset=utf-8');
   if (req.query.descargar) res.attachment(`${t.titulo.replace(/\s+/g, '_')}_${nombre}`);
   res.sendFile(ruta);
 });
