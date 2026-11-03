@@ -348,26 +348,49 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
     etiqueta = "–".join(f"{simbolos[i]}{i + 1}" for i in idx)
     fmt = (lambda v: f"{v:6.3f} Å") if tipo == "distancia" else (lambda v: f"{v:7.2f}°")
     contador, puntos = [0], []
-    psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom])})
+    # Pasos cortos (como hace optking en TS/IRC): con pasos grandes, la coordenada congelada se
+    # desvía al pasar de coordenadas internas a cartesianas y la molécula puede deformarse.
+    pasos_cortos = {"intrafrag_step_limit": 0.2, "intrafrag_step_limit_max": 0.3}
+    tolerancia = 0.01 if tipo == "distancia" else 0.5  # Å o grados
+    psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom]), **pasos_cortos})
     with en_vivo(mol, contador):
         for n, valor in enumerate(valores, 1):
             etapa(f"Scan relajado {simbolo}({etiqueta}): punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
-            colocar_coordenada(mol, tipo, idx, valor)
-            convergio, nota = True, ""
-            try:
-                energia = float(psi4.optimize(metodo, molecule=mol))
-            except Exception as e:  # noqa: BLE001
-                if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
-                    raise
-                convergio, nota = False, mensaje_error(e)
-                energia = variable_global("CURRENT ENERGY")
-            sim, coords = geometria_actual(mol)
-            final = medir_coordenada(coords, tipo, idx)
+            previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()  # última geometría buena (bohr)
+            for intento in (1, 2):
+                mol.set_geometry(psi4.core.Matrix.from_array(previa))
+                mol.update_geometry()
+                colocar_coordenada(mol, tipo, idx, valor)
+                convergio, nota = True, ""
+                try:
+                    energia = float(psi4.optimize(metodo, molecule=mol))
+                except Exception as e:  # noqa: BLE001
+                    if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
+                        raise
+                    convergio, nota = False, mensaje_error(e)
+                    energia = variable_global("CURRENT ENERGY")
+                sim, coords = geometria_actual(mol)
+                final = medir_coordenada(coords, tipo, idx)
+                desvio = abs(final - valor) if tipo != "diedro" else abs((final - valor + 180.0) % 360.0 - 180.0)
+                if desvio <= tolerancia:
+                    break
+                convergio = False
+                nota = f"la coordenada congelada se desvió a {fmt(final).strip()}"
+                if intento == 1:
+                    etapa(f"Scan relajado {simbolo}({etiqueta}): repitiendo el punto {n} con pasos más cortos")
+                    psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
+            psi4.set_options(pasos_cortos)
             puntos.append({"valor": float(valor), "valor_final": final, "energia": energia,
                            "convergio": convergio, "nota": nota, "xyz": texto_xyz(sim, coords)})
-    psi4.set_options({opcion: ""})
+            if not convergio:
+                # El punto siguiente parte de la última geometría buena, no de la deformada
+                mol.set_geometry(psi4.core.Matrix.from_array(previa))
+                mol.update_geometry()
+    psi4.set_options({opcion: "", "intrafrag_step_limit": 0.5, "intrafrag_step_limit_max": 1.0})
 
-    validos = [p for p in puntos if p["energia"] is not None]
+    # El mínimo y el máximo se buscan entre los puntos fiables (si los hay)
+    validos = [p for p in puntos if p["energia"] is not None and p["convergio"]] or \
+              [p for p in puntos if p["energia"] is not None]
     if not validos:
         raise RuntimeError("Ningún punto del scan produjo una energía.")
     e_ref = validos[0]["energia"]
