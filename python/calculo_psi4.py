@@ -370,10 +370,14 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
         for n, valor in enumerate(valores, 1):
             etapa(f"Scan relajado {simbolo}({etiqueta}): punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
             previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()  # última geometría buena (bohr)
+            partida = None  # geometría desde la que se repite el punto (si hace falta)
+            desviada = lambda c: (abs(medir_coordenada(c, tipo, idx) - valor) if tipo != "diedro"  # noqa: E731
+                                  else abs((medir_coordenada(c, tipo, idx) - valor + 180.0) % 360.0 - 180.0)) > tolerancia
             for intento in (1, 2):
-                mol.set_geometry(psi4.core.Matrix.from_array(previa))
+                mol.set_geometry(psi4.core.Matrix.from_array(previa if partida is None else partida))
                 mol.update_geometry()
-                colocar_coordenada(mol, tipo, idx, valor)
+                if partida is None:
+                    colocar_coordenada(mol, tipo, idx, valor)
                 convergio, nota = True, ""
                 inicio = len(energias_pasos)
                 try:
@@ -383,20 +387,31 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
                         raise
                     convergio, nota = False, mensaje_error(e)
                     energia = variable_global("CURRENT ENERGY")
+                    pasos = [r for r in energias_pasos[inicio:] if r.get("energia") is not None]
                     # Con una coordenada congelada, optking a veces no logra bajar la fuerza residual
                     # aunque la energía ya no cambia: si los últimos pasos son estables, el punto vale.
-                    ultimas = [r["energia"] for r in energias_pasos[inicio:][-4:] if r.get("energia") is not None]
+                    ultimas = [r["energia"] for r in pasos[-4:]]
                     if type(e).__name__ == "OptimizationConvergenceError" and len(ultimas) == 4 \
                             and max(ultimas) - min(ultimas) < 2e-6:
                         convergio, nota = True, "convergió en energía (quedó una fuerza residual por la restricción)"
+                    elif intento == 1 and pasos:
+                        # optking oscila (pasa por geometrías casi convergidas y se aleja): se repite desde
+                        # la mejor geometría que visitó, con la coordenada en su valor y pasos cortos
+                        buenas = [r for r in pasos if not desviada(np.array([[float(v) for v in l.split()[1:4]] for l in r["xyz"].splitlines()]))]
+                        if buenas:
+                            mejor = min(buenas, key=lambda r: r["energia"])
+                            partida = np.array([[float(v) for v in l.split()[1:4]] for l in mejor["xyz"].splitlines()]) / BOHR_ANG
+                            etapa(f"Scan relajado {simbolo}({etiqueta}): repitiendo el punto {n} desde la mejor geometría visitada")
+                            psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
+                            continue
                 sim, coords = geometria_actual(mol)
                 final = medir_coordenada(coords, tipo, idx)
-                desvio = abs(final - valor) if tipo != "diedro" else abs((final - valor + 180.0) % 360.0 - 180.0)
-                if desvio <= tolerancia:
+                if not desviada(coords):
                     break
                 convergio = False
                 nota = f"la coordenada congelada se desvió a {fmt(final).strip()}"
                 if intento == 1:
+                    partida = None  # se repite desde la última geometría buena
                     etapa(f"Scan relajado {simbolo}({etiqueta}): repitiendo el punto {n} con pasos más cortos")
                     psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
             psi4.set_options(pasos_cortos)
