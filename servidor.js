@@ -65,19 +65,26 @@ const TAREAS = [
   { id: 'frecuencias', nombre: 'Optimización + frecuencias (IR y termoquímica)' },
   { id: 'ts', nombre: 'Estado de transición (TS) + frecuencias' },
   { id: 'irc', nombre: 'Camino de reacción IRC (desde un TS)' },
-  { id: 'scan', nombre: 'Scan relajado de una distancia' },
+  { id: 'scan', nombre: 'Scan relajado (distancia, ángulo o diedro)' },
 ];
 
-// Opciones del scan relajado: dos átomos (desde 1) y hasta 30 distancias entre 0.5 y 6 Å
+// Opciones del scan relajado: tipo, 2/3/4 átomos (desde 1) y hasta 40 valores dentro de un rango razonable
+const SCAN = {
+  distancia: { natom: 2, min: 0.5, max: 6, nombre: 'distancias', unidad: 'Å' },
+  angulo: { natom: 3, min: 20, max: 179, nombre: 'ángulos', unidad: '°' },
+  diedro: { natom: 4, min: -360, max: 360, nombre: 'diedros', unidad: '°' },
+};
 function opcionesScan(o = {}, natomos = 0) {
-  const atomos = (Array.isArray(o.atomos) ? o.atomos : []).slice(0, 2).map((a) => Math.round(Number(a)));
-  if (atomos.length !== 2 || atomos[0] === atomos[1] || !atomos.every((a) => a >= 1 && a <= natomos)) {
-    throw new Error(`Scan: indique dos átomos distintos entre 1 y ${natomos}.`);
+  const tipo = SCAN[o.tipo] ? o.tipo : 'distancia';
+  const c = SCAN[tipo];
+  const atomos = (Array.isArray(o.atomos) ? o.atomos : []).slice(0, c.natom).map((a) => Math.round(Number(a)));
+  if (atomos.length !== c.natom || new Set(atomos).size !== c.natom || !atomos.every((a) => a >= 1 && a <= natomos)) {
+    throw new Error(`Scan de ${tipo}: indique ${c.natom} átomos distintos entre 1 y ${natomos}.`);
   }
   const valores = (Array.isArray(o.valores) ? o.valores : []).map(Number).filter(Number.isFinite);
-  if (valores.length < 1 || valores.length > 30) throw new Error('Scan: se necesitan entre 1 y 30 distancias.');
-  if (valores.some((v) => v < 0.5 || v > 6)) throw new Error('Scan: las distancias deben estar entre 0.5 y 6 Å.');
-  return { atomos, valores: valores.map((v) => Math.round(v * 10000) / 10000) };
+  if (valores.length < 1 || valores.length > 40) throw new Error(`Scan: se necesitan entre 1 y 40 ${c.nombre}.`);
+  if (valores.some((v) => v < c.min || v > c.max)) throw new Error(`Scan: los ${c.nombre} deben estar entre ${c.min} y ${c.max} ${c.unidad}.`);
+  return { tipo, atomos, valores: valores.map((v) => Math.round(v * 10000) / 10000) };
 }
 
 // Opciones del IRC (dirección, puntos por dirección y tamaño de paso en bohr·amu^½), acotadas

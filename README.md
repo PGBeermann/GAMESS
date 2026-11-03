@@ -13,8 +13,12 @@ el potencial electrostático y las vibraciones.
    Python arbitrario): se interpreta y se valida como cualquier otro cálculo.
    El archivo se abre en un **editor de código** (con números de línea y validación al escribir:
    los errores señalan la línea). Desde ahí se puede corregir, guardar y **ejecutar el cálculo
-   directamente** (botón «▶ Ejecutar cálculo» o Ctrl+Enter). El botón «Ver / editar entrada (.in)»
-   del formulario abre el mismo editor con la molécula dibujada.
+   directamente** (botón «▶ Ejecutar cálculo» o Ctrl+Enter).
+   **El código y la ejecución**: la ventana «Código de entrada (.in)» muestra siempre lo que se va
+   a ejecutar. «Generar geometría 3D» crea el código con las opciones del formulario y, mientras no
+   se edite a mano, se actualiza al cambiarlas. Hay **un solo botón «▶ Ejecutar cálculo»**, que
+   ejecuta ese código. Al lanzar o abrir un cálculo (incluidos «Calcular IRC desde este TS»,
+   «Calcular frecuencias» y «Mis cálculos»), la ventana muestra el `.in` de ese trabajo.
 2. **Generar la geometría 3D**: RDKit añade los hidrógenos, genera coordenadas (ETKDG) y las
    preoptimiza con MMFF94. Sugiere la carga y la multiplicidad.
    En el visor, **«📏 Medir»**: clic en 2 átomos → distancia, 3 → ángulo (vértice en el 2.º),
@@ -39,13 +43,17 @@ el potencial electrostático y las vibraciones.
      (3–60) y paso (0.05–0.5 bohr·amu½). Los puntos se leen del `.opt.json` que escribe Psi4
      con `write_opt_history`. En un .in: `set opt_type irc`, `irc_direction`, `irc_points`,
      `irc_step_size`. Tras un TS con una sola imaginaria aparece «Calcular IRC desde este TS».
-   - **Scan relajado de una distancia**: átomos i–j y valores (desde/hasta/paso, hasta 30
-     puntos). En cada punto se coloca la distancia moviendo rígidamente el fragmento unido a j,
-     se congela con `frozen_distance` (optking 0.5 ya no tiene `fixed_distance`) y se optimiza el
-     resto, partiendo del punto anterior. La salida de Psi4 (.out) termina con la tabla
-     «SCAN RELAJADO» (R, E, ΔE) escrita con `psi4.core.print_out`; la página muestra la curva
-     E vs R, la tabla, la animación y descargas CSV/XYZ. Se lee de un .in con
-     `fixed_/frozen_/ranged_distance` y un bucle `for` (lista, `np.arange`, `np.linspace`).
+   - **Scan relajado** de una **distancia** (2 átomos), un **ángulo de enlace** (3, vértice en el
+     2.º) o un **ángulo diedro** (4), con casillas excluyentes: un solo tipo por cálculo; el scan
+     reemplaza al «Tipo de cálculo». Valores desde/hasta/paso (hasta 40 puntos). En cada punto se
+     coloca el valor moviendo rígidamente el fragmento del último átomo (traslación o rotación de
+     Rodrigues), se congela con `frozen_distance` / `frozen_bend` / `frozen_dihedral` (optking 0.5
+     ya no tiene `fixed_*`) y se optimiza el resto, partiendo del punto anterior. La salida de
+     Psi4 (.out) termina con la tabla «SCAN RELAJADO» (valor, E, ΔE) escrita con
+     `psi4.core.print_out`; la página muestra la curva, la tabla, la animación y descargas
+     CSV/XYZ. «Usar átomos de «Medir»» copia los átomos elegidos en el visor. Se lee de un .in
+     con `fixed_/frozen_/ranged_distance|bend|dihedral` y un bucle `for` (lista, `np.arange`,
+     `np.linspace`).
    - **El servidor no ejecuta el código Python de un .in** (seguridad): interpreta la molécula,
      el nivel de teoría y el tipo de cálculo, y avisa si el archivo trae código que no se ejecuta.
 4. **Resultados**:

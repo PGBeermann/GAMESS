@@ -17,7 +17,7 @@
   const BASES = ['sto-3g', '3-21g', '6-31g', '6-31g*', '6-31g**', '6-31+g*', '6-311g**', 'cc-pvdz', 'aug-cc-pvdz', 'def2-svp', 'def2-tzvp'];
   // Opciones que no cambian el resultado químico (o que el servidor ya fija): se ignoran sin aviso
   const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads|full_hess_every|step_type|hess_update|write_opt_history)$/;
-  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado de una distancia' };
+  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado' };
   const ELEMENTOS = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr I').split(' '));
 
   function normalizarMetodo(m, avisos) {
@@ -171,7 +171,7 @@
       } else if (k === 'irc_points') irc.puntos = parseInt(v, 10);
       else if (k === 'irc_step_size') irc.paso = parseFloat(v);
       else if (k === 'irc_mode' || k === 'irc_convergence') ignoradas.push(`${clave} ${valor}`);
-      else if (/^(fixed|frozen|ranged)_distance$/.test(k)) { /* restricción del scan: se lee aparte */ } else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
+      else if (/^(fixed|frozen|ranged)_(distance|bend|dihedral)$/.test(k)) { /* restricción del scan: se lee aparte */ } else if (k === 'reference') { if (/rohf|cuhf/i.test(valor)) avisos.push(`reference ${valor}: se usa RHF/UHF según la multiplicidad.`); } else if (!INOFENSIVAS.test(k)) ignoradas.push(`${clave} ${valor}`);
     };
     // set { … }, set globals { … } o con nombre de módulo: set optking { … }, set scf { … }
     const bloques = /set\s*(?:\w+\s*)?\{([\s\S]*?)\}/gi;
@@ -276,41 +276,66 @@
     return null;
   }
 
+  // Tipos de scan: átomos, opción de optking, símbolo, unidad y rango permitido
+  const SCAN_TIPOS = {
+    distancia: { natom: 2, clave: 'distance', frozen: 'frozen_distance', simbolo: 'R', unidad: 'Å', min: 0.5, max: 6, nombre: 'distancia' },
+    angulo: { natom: 3, clave: 'bend', frozen: 'frozen_bend', simbolo: 'θ', unidad: '°', min: 20, max: 179, nombre: 'ángulo' },
+    diedro: { natom: 4, clave: 'dihedral', frozen: 'frozen_dihedral', simbolo: 'φ', unidad: '°', min: -360, max: 360, nombre: 'diedro' },
+  };
+
+  // Distancia (Å), ángulo (°) o diedro (°, signo IUPAC) entre puntos [x, y, z]
+  function medirPuntos(P) {
+    const v = (p, q) => [q[0] - p[0], q[1] - p[1], q[2] - p[2]];
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const nrm = (a) => Math.hypot(...a);
+    if (P.length === 2) return nrm(v(P[0], P[1]));
+    if (P.length === 3) {
+      const a = v(P[1], P[0]); const b = v(P[1], P[2]);
+      return (Math.acos(Math.max(-1, Math.min(1, dot(a, b) / (nrm(a) * nrm(b))))) * 180) / Math.PI;
+    }
+    const b0 = v(P[1], P[0]); const b1 = v(P[1], P[2]); const b2 = v(P[2], P[3]);
+    const n1 = b1.map((x) => x / nrm(b1));
+    const p = b0.map((x, k) => x - dot(b0, n1) * n1[k]);
+    const w = b2.map((x, k) => x - dot(b2, n1) * n1[k]);
+    const c = [n1[1] * p[2] - n1[2] * p[1], n1[2] * p[0] - n1[0] * p[2], n1[0] * p[1] - n1[1] * p[0]];
+    return (Math.atan2(dot(c, w), dot(p, w)) * 180) / Math.PI;
+  }
+
   function leerScan(textoResto, sinBloques, xyz, avisos) {
-    const r = /(fixed|frozen|ranged)_distance['"]?\s*[:=]?\s*(?:\(\s*)?[fFrRbBuU]?["']\s*(\d+)\s+(\d+)\s*([^"']*)["']/i.exec(textoResto);
+    const r = /(fixed|frozen|ranged)_(distance|bend|dihedral)['"]?\s*[:=]?\s*(?:\(\s*)?[fFrRbBuU]?["']([^"']*)["']/i.exec(textoResto);
     if (!r) return null;
-    const tipo = r[1].toLowerCase();
-    const atomos = [parseInt(r[2], 10), parseInt(r[3], 10)];
+    const modo = r[1].toLowerCase();
+    const tipo = { distance: 'distancia', bend: 'angulo', dihedral: 'diedro' }[r[2].toLowerCase()];
+    const c = SCAN_TIPOS[tipo];
+    const fichas = r[3].trim().split(/[\s,]+/).filter(Boolean);
+    const atomos = fichas.slice(0, c.natom).map((t) => (/^\d+$/.test(t) ? parseInt(t, 10) : NaN));
     const filas = String(xyz).trim().split('\n').map((l) => l.trim().split(/\s+/));
     const nat = filas.length;
-    if (atomos[0] === atomos[1] || atomos.some((a) => a < 1 || a > nat)) {
-      throw new Error(`La restricción ${tipo}_distance usa átomos no válidos (la molécula tiene ${nat}): «${r[0]}»`);
+    if (atomos.length !== c.natom || atomos.some((a) => !Number.isInteger(a) || a < 1 || a > nat) || new Set(atomos).size !== c.natom) {
+      throw new Error(`La restricción ${modo}_${r[2]} necesita ${c.natom} átomos distintos entre 1 y ${nat}: «${r[0]}»`);
     }
-    const etq = `${filas[atomos[0] - 1][0]}${atomos[0]}–${filas[atomos[1] - 1][0]}${atomos[1]}`;
+    const etq = atomos.map((a) => `${filas[a - 1][0]}${a}`).join('–');
     let valores = null;
     for (const m of sinBloques.matchAll(/^\s*for\s+(?:\w+\s*,\s*)?\w+\s+in\s+(.+?)\s*:\s*$/gm)) {
       const v = valoresDe(m[1], sinBloques);
       if (v) { valores = v; break; }
     }
     if (!valores) {
-      const fijos = numeros(r[4]);
-      if (tipo === 'fixed' && fijos.length) valores = [fijos[0]];
-      else if (tipo === 'ranged' && fijos.length >= 2) valores = [(fijos[0] + fijos[1]) / 2];
-      else {
-        const [p, q] = atomos.map((a) => filas[a - 1].slice(1, 4).map(Number));
-        valores = [+Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]).toFixed(4)];
-      }
-      avisos.push(`No se encontró un bucle con los valores del scan: se hace una sola optimización con R(${etq}) = ${valores[0]} Å fija.`);
+      const fijos = numeros(fichas.slice(c.natom).join(' '));
+      if (modo === 'fixed' && fijos.length) valores = [fijos[0]];
+      else if (modo === 'ranged' && fijos.length >= 2) valores = [(fijos[0] + fijos[1]) / 2];
+      else valores = [+medirPuntos(atomos.map((a) => filas[a - 1].slice(1, 4).map(Number))).toFixed(tipo === 'distancia' ? 4 : 2)];
+      avisos.push(`No se encontró un bucle con los valores del scan: se hace una sola optimización con ${c.simbolo}(${etq}) = ${valores[0]} ${c.unidad} fijo.`);
     }
-    if (valores.length > 30) {
-      avisos.push(`El scan tenía ${valores.length} puntos: se usan los 30 primeros.`);
-      valores = valores.slice(0, 30);
+    if (valores.length > 40) {
+      avisos.push(`El scan tenía ${valores.length} puntos: se usan los 40 primeros.`);
+      valores = valores.slice(0, 40);
     }
-    if (valores.some((v) => v < 0.5 || v > 6)) throw new Error(`Las distancias del scan deben estar entre 0.5 y 6 Å (valores leídos: ${valores.join(', ')}).`);
-    avisos.push(`Scan relajado de R(${etq}) en ${valores.length} punto(s), de ${valores[0]} a ${valores[valores.length - 1]} Å: en cada punto se fija la distancia y se optimiza el resto. El .out incluirá la tabla «SCAN RELAJADO» (R, E y ΔE).`);
-    if (tipo === 'fixed') avisos.push('«fixed_distance» no existe en Psi4 1.11 (optking 0.5): el servidor coloca cada distancia y la congela con «frozen_distance», que da el mismo scan.');
+    if (valores.some((v) => v < c.min || v > c.max)) throw new Error(`Los valores del scan de ${c.nombre} deben estar entre ${c.min} y ${c.max} ${c.unidad} (leídos: ${valores.join(', ')}).`);
+    avisos.push(`Scan relajado de ${c.nombre} ${c.simbolo}(${etq}) en ${valores.length} punto(s), de ${valores[0]} a ${valores[valores.length - 1]} ${c.unidad}: en cada punto se fija el valor y se optimiza el resto. El .out incluirá la tabla «SCAN RELAJADO».`);
+    if (modo === 'fixed') avisos.push(`«fixed_${r[2]}» no existe en Psi4 1.11 (optking 0.5): el servidor coloca cada valor y lo congela con «${c.frozen}», que da el mismo scan.`);
     avisos.push('El bucle y el resto del código Python del archivo (print_out, variables…) no se ejecutan tal cual: el servidor hace el scan equivalente y escribe la tabla en el .out.');
-    return { atomos, valores };
+    return { tipo, atomos, valores };
   }
 
   function leerXYZ(texto) {
@@ -327,52 +352,94 @@
 
   const NOMBRE_BASE_PSI4 = { 'sto-3g': 'sto-3g', '3-21g': '3-21g', '6-31g': '6-31g', '6-31g*': '6-31g*', '6-31g**': '6-31g**', '6-31+g*': '6-31+g*', '6-311g**': '6-311g**', 'cc-pvdz': 'cc-pvdz', 'aug-cc-pvdz': 'aug-cc-pvdz', 'def2-svp': 'def2-svp', 'def2-tzvp': 'def2-tzvp' };
 
-  // Código del scan relajado para Psi4 ≥ 1.7 (optking 0.5 ya no tiene fixed_distance): en cada
-  // punto se coloca la distancia moviendo el fragmento de j, se congela y se optimiza el resto.
+  // Código del scan relajado para Psi4 ≥ 1.7 (optking 0.5 ya no tiene fixed_*): en cada punto se
+  // coloca el valor moviendo el fragmento del último átomo, se congela y se optimiza el resto.
   function lineasScan(nombre, metodo, xyz, scan) {
-    const [i, j] = scan?.atomos || [1, 2];
+    const tipo = SCAN_TIPOS[scan?.tipo] ? scan.tipo : 'distancia';
+    const c = SCAN_TIPOS[tipo];
+    const atomos = (scan?.atomos || [1, 2, 3, 4]).slice(0, c.natom);
     const valores = scan?.valores || [];
     const sim = String(xyz).trim().split(/\r?\n/).map((l) => l.trim().split(/\s+/)[0]);
-    const etq = `${sim[i - 1] || ''}${i}–${sim[j - 1] || ''}${j}`;
+    const etq = atomos.map((a) => `${sim[a - 1] || ''}${a}`).join('–');
+    const formato = tipo === 'distancia' ? '{v:6.3f} Å' : '{v:7.2f}°';
     return [
-      `# Scan relajado de R(${etq}): en cada punto se fija la distancia y se optimiza el resto`,
+      `# Scan relajado de ${c.nombre} ${c.simbolo}(${etq}): en cada punto se fija el valor (${c.frozen})`,
+      '# y se optimiza el resto, partiendo de la geometría del punto anterior.',
       'import numpy as np',
       "RADIOS = {'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57, 'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'Br': 1.20, 'I': 1.39}",
       '',
-      'def colocar_distancia(mol, i, j, valor):',
-      '    """Pone la distancia i-j (desde 0) en valor (Å) moviendo el fragmento unido a j."""',
-      '    x = mol.geometry().np * psi4.constants.bohr2angstroms',
-      '    s = [mol.symbol(k).capitalize() for k in range(mol.natom())]',
+      'def fragmento(x, s, desde, corte):',
+      '    """Átomos unidos a «desde» si se corta el enlace «corte»."""',
       '    r = [RADIOS.get(e, 1.5) for e in s]',
-      '    frag, pila = {j}, [j]',
+      '    frag, pila = {desde}, [desde]',
       '    while pila:',
       '        a = pila.pop()',
       '        for b in range(len(s)):',
-      '            if b not in frag and {a, b} != {i, j} and np.linalg.norm(x[a] - x[b]) < 1.2 * (r[a] + r[b]):',
+      '            if b not in frag and {a, b} != set(corte) and np.linalg.norm(x[a] - x[b]) < 1.2 * (r[a] + r[b]):',
       '                frag.add(b)',
       '                pila.append(b)',
-      '    if i in frag:',
-      '        frag = {j}',
-      '    v = x[j] - x[i]',
-      '    d = np.linalg.norm(v)',
-      '    for k in frag:',
-      '        x[k] += (valor - d) * v / d',
+      '    return frag',
+      '',
+      'def rotar(p, o, eje, ang):',
+      '    k = eje / np.linalg.norm(eje)',
+      '    p = p - o',
+      '    return o + p * np.cos(ang) + np.cross(k, p) * np.sin(ang) + np.outer(p @ k, k) * (1 - np.cos(ang))',
+      '',
+      'def medir(x, idx):',
+      '    """Distancia (Å), ángulo (°) o diedro (°) según el número de átomos (índices desde 0)."""',
+      '    if len(idx) == 2:',
+      '        return np.linalg.norm(x[idx[1]] - x[idx[0]])',
+      '    if len(idx) == 3:',
+      '        a, b = x[idx[0]] - x[idx[1]], x[idx[2]] - x[idx[1]]',
+      '        return np.degrees(np.arccos(np.clip(a @ b / np.linalg.norm(a) / np.linalg.norm(b), -1, 1)))',
+      '    b0, b1, b2 = x[idx[0]] - x[idx[1]], x[idx[2]] - x[idx[1]], x[idx[3]] - x[idx[2]]',
+      '    n1 = b1 / np.linalg.norm(b1)',
+      '    v, w = b0 - (b0 @ n1) * n1, b2 - (b2 @ n1) * n1',
+      '    return np.degrees(np.arctan2(np.cross(n1, v) @ w, v @ w))',
+      '',
+      'def colocar(mol, idx, valor):',
+      '    """Pone la coordenada en «valor» moviendo rígidamente el fragmento del último átomo."""',
+      '    x = mol.geometry().np * psi4.constants.bohr2angstroms',
+      '    s = [mol.symbol(k).capitalize() for k in range(mol.natom())]',
+      '    if len(idx) == 2:',
+      '        i, j = idx',
+      '        frag = fragmento(x, s, j, (i, j))',
+      '        if i in frag:',
+      '            frag = {j}',
+      '        v = x[j] - x[i]',
+      '        d = np.linalg.norm(v)',
+      '        for k in frag:',
+      '            x[k] += (valor - d) * v / d',
+      '    elif len(idx) == 3:',
+      '        i, j, k = idx',
+      '        frag = fragmento(x, s, k, (j, k))',
+      '        if i in frag or j in frag:',
+      '            frag = {k}',
+      '        f = sorted(frag)',
+      '        x[f] = rotar(x[f], x[j], np.cross(x[i] - x[j], x[k] - x[j]), np.radians(valor - medir(x, idx)))',
+      '    else:',
+      '        i, j, k, l = idx',
+      '        frag = fragmento(x, s, k, (j, k)) - {k}',
+      '        if i in frag or j in frag:',
+      '            frag = {l}',
+      '        f = sorted(frag)',
+      '        x[f] = rotar(x[f], x[k], x[k] - x[j], np.radians(valor - medir(x, idx)))',
       '    mol.set_geometry(psi4.core.Matrix.from_array(x / psi4.constants.bohr2angstroms))',
       '    mol.update_geometry()',
       '',
-      `psi4.set_options({'frozen_distance': '${i} ${j}'})`,
+      `psi4.set_options({'${c.frozen}': '${atomos.join(' ')}'})`,
       'resultados, geometrias = [], []',
-      `for R in [${valores.map((v) => v.toFixed(4)).join(', ')}]:`,
-      `    colocar_distancia(${nombre}, ${i - 1}, ${j - 1}, R)`,
+      `for v in [${valores.map((v) => v.toFixed(4)).join(', ')}]:`,
+      `    colocar(${nombre}, [${atomos.map((a) => a - 1).join(', ')}], v)`,
       `    e = optimize('${metodo}')`,
-      '    resultados.append((R, e))',
+      '    resultados.append((v, e))',
       `    geometrias.append(${nombre}.geometry().clone())`,
-      "psi4.set_options({'frozen_distance': ''})",
+      `psi4.set_options({'${c.frozen}': ''})`,
       '',
-      `psi4.core.print_out("\\n\\n===== SCAN RELAJADO ${etq} =====\\n")`,
+      `psi4.core.print_out("\\n\\n===== SCAN RELAJADO ${c.simbolo}(${etq}) =====\\n")`,
       'e_ref = resultados[0][1]',
-      'for R, e in resultados:',
-      `    psi4.core.print_out(f"R(${etq}) = {R:6.3f} Å   E = {e:.10f} Eh   ΔE = {(e - e_ref) * psi4.constants.hartree2kcalmol:8.3f} kcal/mol\\n")`,
+      'for v, e in resultados:',
+      `    psi4.core.print_out(f"${c.simbolo}(${etq}) = ${formato}   E = {e:.10f} Eh   ΔE = {(e - e_ref) * psi4.constants.hartree2kcalmol:8.3f} kcal/mol\\n")`,
       '',
       '# Función de onda en el punto de menor energía',
       'imin = min(range(len(resultados)), key=lambda k: resultados[k][1])',

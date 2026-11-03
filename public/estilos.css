@@ -184,6 +184,13 @@ kbd { font-family: var(--mono); font-size: .8em; padding: 1px 5px; border: 1px s
 .form-calculo label.chk { flex-direction: row; font-weight: 500; color: var(--texto); }
 .form-calculo .largo { grid-column: span 2; }
 .form-calculo .nota-irc { grid-column: 1 / -1; margin: 0; }
+.scan-caja { grid-column: 1 / -1; border: 1px solid var(--borde); border-radius: 8px; padding: 8px 12px 10px; margin: 0; min-width: 0; }
+.scan-caja legend { font-size: .85rem; font-weight: 600; color: var(--gris); padding: 0 4px; }
+.scan-tipos { display: flex; flex-wrap: wrap; gap: 6px 18px; }
+.scan-campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; align-items: end; margin-top: 10px; }
+.scan-campos .btn { justify-self: start; }
+.scan-caja .nota { margin: 8px 0 0; }
+select:disabled { opacity: .55; }
 @media (max-width: 520px) { .form-calculo .largo { grid-column: 1 / -1; } }
 
 /* Progreso */

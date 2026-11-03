@@ -248,54 +248,111 @@ RADIOS_COV = {"H": 0.31, "He": 0.28, "Li": 1.28, "Be": 0.96, "B": 0.84, "C": 0.7
               "Cl": 1.02, "Ar": 1.06, "K": 2.03, "Ca": 1.76, "Br": 1.20, "I": 1.39}
 
 
-def colocar_distancia(mol, i, j, valor):
-    """Pone la distancia i–j (índices desde 0) en `valor` Å moviendo rígidamente el fragmento de j.
-
-    El fragmento es lo que queda unido a j si se corta el enlace i–j (p. ej. el CH3 de un
-    CH3–Cl si j es el C). Si i y j están en un anillo, sólo se mueve el átomo j.
-    """
-    simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
-    x = a_numpy(mol.geometry()).reshape(-1, 3) * BOHR_ANG
+def fragmento_unido(x, simbolos, desde, corte):
+    """Átomos unidos a `desde` si se corta el enlace `corte` (par de índices desde 0)."""
     n = len(simbolos)
     radio = [RADIOS_COV.get(s, 1.5) for s in simbolos]
-    fragmento, pila = {j}, [j]
+    fragmento, pila = {desde}, [desde]
     while pila:
         a = pila.pop()
         for b in range(n):
-            if b not in fragmento and {a, b} != {i, j} and np.linalg.norm(x[a] - x[b]) < 1.2 * (radio[a] + radio[b]):
+            if b not in fragmento and {a, b} != set(corte) and np.linalg.norm(x[a] - x[b]) < 1.2 * (radio[a] + radio[b]):
                 fragmento.add(b)
                 pila.append(b)
-    if i in fragmento:
-        fragmento = {j}
-    v = x[j] - x[i]
-    d = float(np.linalg.norm(v))
-    for k in fragmento:
-        x[k] += (valor - d) * v / d
+    return fragmento
+
+
+def rotar(puntos, origen, eje, angulo):
+    """Rota puntos (n×3) alrededor del eje que pasa por `origen` (fórmula de Rodrigues)."""
+    k = eje / np.linalg.norm(eje)
+    p = puntos - origen
+    c, s = np.cos(angulo), np.sin(angulo)
+    return origen + p * c + np.cross(k, p) * s + np.outer(p @ k, k) * (1 - c)
+
+
+def medir_coordenada(x, tipo, idx):
+    """Distancia (Å), ángulo (°) o diedro (°, signo IUPAC) entre átomos (índices desde 0)."""
+    if tipo == "distancia":
+        return float(np.linalg.norm(x[idx[1]] - x[idx[0]]))
+    if tipo == "angulo":
+        a, b = x[idx[0]] - x[idx[1]], x[idx[2]] - x[idx[1]]
+        return float(np.degrees(np.arccos(np.clip(a @ b / (np.linalg.norm(a) * np.linalg.norm(b)), -1, 1))))
+    b0, b1, b2 = x[idx[0]] - x[idx[1]], x[idx[2]] - x[idx[1]], x[idx[3]] - x[idx[2]]
+    n1 = b1 / np.linalg.norm(b1)
+    v, w = b0 - (b0 @ n1) * n1, b2 - (b2 @ n1) * n1
+    return float(np.degrees(np.arctan2(np.cross(n1, v) @ w, v @ w)))
+
+
+def colocar_coordenada(mol, tipo, idx, valor):
+    """Pone la coordenada en `valor` moviendo rígidamente el fragmento del último átomo.
+
+    distancia i–j: se traslada el fragmento de j a lo largo de i→j.
+    ángulo i–j–k (vértice j): se gira el fragmento de k en el plano i–j–k, alrededor de j.
+    diedro i–j–k–l: se gira todo el lado de k (con l) alrededor del enlace j–k.
+    Si los átomos están en un anillo, sólo se mueve el último átomo.
+    """
+    simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
+    x = a_numpy(mol.geometry()).reshape(-1, 3) * BOHR_ANG
+    if tipo == "distancia":
+        i, j = idx
+        frag = fragmento_unido(x, simbolos, j, (i, j))
+        if i in frag:
+            frag = {j}
+        v = x[j] - x[i]
+        d = float(np.linalg.norm(v))
+        for k in frag:
+            x[k] += (valor - d) * v / d
+    elif tipo == "angulo":
+        i, j, k = idx
+        frag = fragmento_unido(x, simbolos, k, (j, k))
+        if i in frag or j in frag:
+            frag = {k}
+        eje = np.cross(x[i] - x[j], x[k] - x[j])
+        if np.linalg.norm(eje) < 1e-8:  # ángulo de 180°: cualquier perpendicular sirve
+            eje = np.cross(x[k] - x[j], [1.0, 0.0, 0.0])
+            if np.linalg.norm(eje) < 1e-8:
+                eje = np.cross(x[k] - x[j], [0.0, 1.0, 0.0])
+        delta = np.radians(valor - medir_coordenada(x, "angulo", idx))
+        lista = sorted(frag)
+        x[lista] = rotar(x[lista], x[j], eje, delta)
+    else:
+        i, j, k, l = idx
+        frag = fragmento_unido(x, simbolos, k, (j, k)) - {k}
+        if j in frag or i in frag:
+            frag = {l}
+        delta = np.radians(valor - medir_coordenada(x, "diedro", idx))
+        lista = sorted(frag)
+        x[lista] = rotar(x[lista], x[k], x[k] - x[j], delta)
     mol.set_geometry(psi4.core.Matrix.from_array(x / BOHR_ANG))
     mol.update_geometry()
 
 
-def distancia(mol, i, j):
-    x = a_numpy(mol.geometry()).reshape(-1, 3) * BOHR_ANG
-    return float(np.linalg.norm(x[i] - x[j]))
+SCAN_TIPOS = {
+    # tipo: (nº de átomos, opción de optking, símbolo, unidad)
+    "distancia": (2, "frozen_distance", "R", "Å"),
+    "angulo": (3, "frozen_bend", "θ", "°"),
+    "diedro": (4, "frozen_dihedral", "φ", "°"),
+}
 
 
-def scan_relajado(metodo, mol, atomos, valores):
-    """Scan relajado de la distancia entre dos átomos (numerados desde 1).
+def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
+    """Scan relajado de una distancia, un ángulo o un diedro (átomos numerados desde 1).
 
-    Para cada valor se coloca la distancia, se congela (optking: frozen_distance) y se optimiza
-    el resto de la molécula, partiendo de la geometría optimizada del punto anterior. Al final
-    se escribe la tabla del scan en la salida de Psi4 (.out).
+    Para cada valor se coloca la coordenada, se congela (optking: frozen_distance, frozen_bend
+    o frozen_dihedral) y se optimiza el resto de la molécula, partiendo de la geometría
+    optimizada del punto anterior. Al final se escribe la tabla del scan en el .out.
     """
-    i, j = atomos[0] - 1, atomos[1] - 1
+    natom, opcion, simbolo, unidad = SCAN_TIPOS[tipo]
+    idx = [a - 1 for a in atomos[:natom]]
     simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
-    etiqueta = f"{simbolos[i]}{atomos[0]}–{simbolos[j]}{atomos[1]}"
+    etiqueta = "–".join(f"{simbolos[i]}{i + 1}" for i in idx)
+    fmt = (lambda v: f"{v:6.3f} Å") if tipo == "distancia" else (lambda v: f"{v:7.2f}°")
     contador, puntos = [0], []
-    psi4.set_options({"frozen_distance": f"{atomos[0]} {atomos[1]}"})
+    psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom])})
     with en_vivo(mol, contador):
-        for k, valor in enumerate(valores, 1):
-            etapa(f"Scan relajado {etiqueta}: punto {k} de {len(valores)} (R = {valor:.3f} Å)")
-            colocar_distancia(mol, i, j, valor)
+        for n, valor in enumerate(valores, 1):
+            etapa(f"Scan relajado {simbolo}({etiqueta}): punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
+            colocar_coordenada(mol, tipo, idx, valor)
             convergio, nota = True, ""
             try:
                 energia = float(psi4.optimize(metodo, molecule=mol))
@@ -305,9 +362,10 @@ def scan_relajado(metodo, mol, atomos, valores):
                 convergio, nota = False, mensaje_error(e)
                 energia = variable_global("CURRENT ENERGY")
             sim, coords = geometria_actual(mol)
-            puntos.append({"r": float(valor), "r_final": distancia(mol, i, j), "energia": energia,
+            final = medir_coordenada(coords, tipo, idx)
+            puntos.append({"valor": float(valor), "valor_final": final, "energia": energia,
                            "convergio": convergio, "nota": nota, "xyz": texto_xyz(sim, coords)})
-    psi4.set_options({"frozen_distance": ""})
+    psi4.set_options({opcion: ""})
 
     validos = [p for p in puntos if p["energia"] is not None]
     if not validos:
@@ -319,14 +377,15 @@ def scan_relajado(metodo, mol, atomos, valores):
         p["de_min_kcal"] = None if p["energia"] is None else (p["energia"] - e_min) * HARTREE_KCAL
 
     # Tabla en el .out (como haría un script de Psi4 con psi4.core.print_out)
-    psi4.core.print_out(f"\n\n===== SCAN RELAJADO {etiqueta} ({metodo.upper()}) =====\n")
-    psi4.core.print_out("ΔE respecto al primer punto; la distancia queda congelada en cada optimización.\n\n")
+    nombre = {"distancia": "distancia", "angulo": "ángulo", "diedro": "diedro"}[tipo]
+    psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}) =====\n")
+    psi4.core.print_out(f"ΔE respecto al primer punto; el {nombre} queda congelado ({opcion}) en cada optimización.\n\n")
     for p in puntos:
         if p["energia"] is None:
-            psi4.core.print_out(f"R({etiqueta}) = {p['r']:6.3f} Å   sin energía ({p['nota']})\n")
+            psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   sin energía ({p['nota']})\n")
             continue
         aviso = "" if p["convergio"] else "   (no convergió)"
-        psi4.core.print_out(f"R({etiqueta}) = {p['r']:6.3f} Å   E = {p['energia']:.10f} Eh   "
+        psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   E = {p['energia']:.10f} Eh   "
                             f"ΔE = {p['de_kcal']:8.3f} kcal/mol{aviso}\n")
     psi4.core.print_out("=" * 60 + "\n")
 
@@ -336,8 +395,9 @@ def scan_relajado(metodo, mol, atomos, valores):
     mol.set_geometry(psi4.core.Matrix.from_array(
         np.array([[float(v) for v in l.split()[1:4]] for l in minimo["xyz"].splitlines()]) / BOHR_ANG))
     mol.update_geometry()
-    return {"atomos": list(atomos), "etiqueta": etiqueta, "puntos": puntos,
-            "r_minimo": minimo["r"], "r_maximo": maximo["r"],
+    return {"tipo": tipo, "simbolo": simbolo, "unidad": unidad, "atomos": list(atomos[:natom]),
+            "etiqueta": etiqueta, "puntos": puntos,
+            "valor_minimo": minimo["valor"], "valor_maximo": maximo["valor"],
             "rango_kcal": (maximo["energia"] - minimo["energia"]) * HARTREE_KCAL,
             "no_convergidos": sum(1 for p in puntos if not p["convergio"])}
 
@@ -556,11 +616,13 @@ def main():
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         elif tarea == "scan":
             op = entrada.get("scan") or {}
-            atomos = [int(a) for a in (op.get("atomos") or [])][:2]
-            valores = [float(v) for v in (op.get("valores") or [])][:30]
-            if len(atomos) != 2 or len(set(atomos)) != 2 or not all(1 <= a <= n_atomos for a in atomos) or not valores:
+            tipo = op.get("tipo") if op.get("tipo") in SCAN_TIPOS else "distancia"
+            natom = SCAN_TIPOS[tipo][0]
+            atomos = [int(a) for a in (op.get("atomos") or [])][:natom]
+            valores = [float(v) for v in (op.get("valores") or [])][:40]
+            if len(atomos) != natom or len(set(atomos)) != natom or not all(1 <= a <= n_atomos for a in atomos) or not valores:
                 raise ValueError("Opciones del scan no válidas.")
-            resultado["scan"] = scan_relajado(metodo, mol, atomos, valores)
+            resultado["scan"] = scan_relajado(metodo, mol, atomos, valores, tipo)
             etapa("Calculando la función de onda en el punto de menor energía del scan")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         else:

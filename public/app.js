@@ -73,7 +73,7 @@ async function cargarOpciones() {
     estado.opciones = o;
     sel('#metodo', o.metodos, 'b3lyp');
     sel('#base', o.bases, '6-31g*');
-    sel('#tarea', o.tareas, 'optimizacion');
+    sel('#tarea', o.tareas.filter((t) => t.id !== 'scan'), 'optimizacion'); // el scan se elige con sus casillas
     const es = $('#estadoServidor');
     es.textContent = o.psi4 ? `Psi4 ${o.psi4} · ${o.hilos} hilos` : 'Servidor activo (Psi4 cargando…)';
     es.className = 'estado-servidor ok';
@@ -82,6 +82,7 @@ async function cargarOpciones() {
     if (!o.psi4) setTimeout(cargarOpciones, 8000);
     pintarHistorial();
     actualizarEstimacion();
+    sincronizarCodigo(); // si la geometría ya estaba lista, se genera el código con las opciones cargadas
   } catch (e) {
     $('#estadoServidor').textContent = 'Sin conexión con el servidor';
     $('#estadoServidor').className = 'estado-servidor mal';
@@ -92,7 +93,7 @@ async function cargarOpciones() {
 function actualizarEstimacion() {
   const n = estado.geom?.natomos;
   const pesados = estado.geom ? estado.geom.xyz.split('\n').filter((l) => !/^H\s/.test(l)).length : null;
-  const base = $('#base').value; const metodo = $('#metodo').value; const tarea = $('#tarea').value;
+  const base = $('#base').value; const metodo = $('#metodo').value; const tarea = tareaEfectiva();
   const fb = { 'sto-3g': 0.3, '3-21g': 0.5, '6-31g': 0.7, '6-31g*': 1, '6-31g**': 1.3, '6-31+g*': 1.6, '6-311g**': 2, 'cc-pvdz': 1.3, 'aug-cc-pvdz': 4, 'def2-svp': 1.2, 'def2-tzvp': 5 }[base] || 1;
   const fm = { hf: 0.6, mp2: 3 }[metodo] || 1;
   // Hessiano analítico para HF; para DFT/MP2 Psi4 usa diferencias finitas de gradientes (~2 por coordenada)
@@ -438,7 +439,7 @@ async function esperarEstructura() {
   return '';
 }
 
-async function generar3D() {
+async function generar3D({ explicito = false } = {}) {
   if (!estado.jsme) throw new Error('El editor JSME aún no está listo.');
   const smiles = await esperarEstructura();
   const molfile = estado.jsme.molFile();
@@ -464,7 +465,9 @@ async function generar3D() {
     cargarModelo(g.molblock, 'sdf');
     $('#etiquetaModelo').textContent = `${g.formula} · geometría inicial (${g.campo_fuerza})`;
     actualizarEstimacion();
-    if (editorAbierto()) validarEditor();
+    // El código .in se genera con la geometría nueva y las opciones del formulario
+    const forzar = explicito && editadoAMano() && confirm('El código fue editado a mano. ¿Reemplazarlo con la geometría nueva y las opciones del formulario?');
+    sincronizarCodigo({ forzar: forzar || !editadoAMano(), desplazar: explicito });
     return g;
   } finally {
     btn.disabled = false;
@@ -513,7 +516,7 @@ function lineaDelError(mensaje) {
 
 // ¿El formulario o el dibujo cambiaron después de aplicar el código?
 function formularioDistinto(d) {
-  return $('#metodo').value !== d.metodo || $('#base').value !== d.base || $('#tarea').value !== d.tarea
+  return $('#metodo').value !== d.metodo || $('#base').value !== d.base || tareaEfectiva() !== d.tarea
     || parseInt($('#carga').value, 10) !== d.carga || parseInt($('#multiplicidad').value, 10) !== d.multiplicidad
     || estado.modificada || !estado.geom || estado.geom.claveEntrada !== editor.clave;
 }
@@ -525,9 +528,11 @@ function validarEditor() {
     pintarLineas();
     const natomos = d.xyz.trim().split('\n').length;
     let pendiente = '';
-    if (textoEditor() !== editor.aplicado) pendiente = ' · <span class="pend">cambios sin aplicar (se aplican al ejecutar)</span>';
+    if (textoEditor() !== editor.aplicado) pendiente = ' · <span class="pend">editado a mano: ya no se actualiza con el formulario («Regenerar desde el formulario» lo vuelve a sincronizar); se ejecuta tal cual</span>';
     else if (formularioDistinto(d)) pendiente = ' · <span class="pend">el formulario o el dibujo cambiaron; al ejecutar se usará este código</span>';
-    caja.innerHTML = `<span class="ok">✓ Código válido</span> · ${natomos} átomos · carga ${d.carga} · multiplicidad ${d.multiplicidad} · ${esc(nombreDe('metodos', d.metodo))}/${esc(nombreDe('bases', d.base))} · ${esc(nombreDe('tareas', d.tarea))}${pendiente}`;
+    if (estado.errorFormulario && textoEditor() === editor.aplicado) pendiente += ` · <span class="pend">formulario incompleto: ${esc(estado.errorFormulario)}</span>`;
+    const origen = editor.trabajo ? `<span class="pend">Código del cálculo «${esc(editor.trabajo.titulo || '')}»</span> · ` : '';
+    caja.innerHTML = `${origen}<span class="ok">✓ Código válido</span> · ${natomos} átomos · carga ${d.carga} · multiplicidad ${d.multiplicidad} · ${esc(nombreDe('metodos', d.metodo))}/${esc(nombreDe('bases', d.base))} · ${esc(nombreDe('tareas', d.tarea))}${pendiente}`;
     return d;
   } catch (e) {
     const linea = lineaDelError(e.message);
@@ -537,16 +542,17 @@ function validarEditor() {
   }
 }
 
-function abrirEditor(texto, nombre) {
+function abrirEditor(texto, nombre, { desplazar = true, trabajo = null } = {}) {
   editor.nombre = nombre;
   editor.aplicado = null;
   editor.clave = null;
+  editor.trabajo = trabajo;
   $('#editorTexto').value = texto.replace(/\r\n/g, '\n');
   $('#editorTexto').scrollTop = 0;
   $('#nombreEditor').textContent = nombre;
   $('#tarjetaEditor').hidden = false;
   validarEditor();
-  $('#tarjetaEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  if (desplazar) $('#tarjetaEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 }
 
 // El código del editor coincide con la molécula y el formulario actuales
@@ -589,28 +595,36 @@ async function aplicarEditor(avisosExtra = []) {
     $('#etiquetaModelo').textContent = `${g.formula} · geometría de ${nombre}`;
     if (g.aviso) avisos.push(g.aviso);
   }
-  // Formulario con lo que dice el código (el título se conserva si corresponde a la misma molécula)
-  const tituloActual = $('#titulo').value.trim();
-  if (!tituloActual || nombreMolecula(tituloActual) !== datos.titulo) $('#titulo').value = datos.titulo || nombre.replace(/\.[^.]+$/, '');
-  $('#carga').value = datos.carga;
-  $('#multiplicidad').value = datos.multiplicidad;
-  $('#metodo').value = datos.metodo;
-  $('#base').value = datos.base;
-  $('#tarea').value = datos.tarea;
-  if (datos.irc) {
-    $('#ircDireccion').value = datos.irc.direccion;
-    $('#ircPuntos').value = datos.irc.puntos;
-    $('#ircPaso').value = datos.irc.paso;
-  }
-  if (datos.scan) ponerScanEnFormulario(datos.scan);
-  mostrarOpcionesIRC();
-  if (datos.mep) $('#mep').checked = true;
+  ponerFormulario(datos, nombre.replace(/\.[^.]+$/, ''));
   $('#infoMolecula').innerHTML = `<strong>${esc(nombre)}</strong>: ${esc(g.formula)} · ${g.natomos} átomos · ${g.electrones} electrones · carga ${datos.carga} · multiplicidad ${datos.multiplicidad} · ${esc(nombreDe('metodos', datos.metodo))}/${esc(nombreDe('bases', datos.base))} · ${esc(nombreDe('tareas', datos.tarea))}`;
   avisos.push('Se usan las coordenadas del código tal cual. Si edita el dibujo, se generará una geometría nueva.');
   mostrarAvisos(avisos);
   actualizarEstimacion();
   marcarAplicado(texto, datos);
   return datos;
+}
+
+// Formulario con lo que dice el código (el título se conserva si corresponde a la misma molécula)
+function ponerFormulario(datos, tituloPorDefecto = '') {
+  const tituloActual = $('#titulo').value.trim();
+  if (!tituloActual || nombreMolecula(tituloActual) !== datos.titulo) $('#titulo').value = datos.titulo || tituloPorDefecto;
+  $('#carga').value = datos.carga;
+  $('#multiplicidad').value = datos.multiplicidad;
+  $('#metodo').value = datos.metodo;
+  $('#base').value = datos.base;
+  if (datos.tarea === 'scan' && datos.scan) ponerScanEnFormulario(datos.scan);
+  else {
+    $$('.scan-tipo').forEach((c) => { c.checked = false; });
+    estado.scanEditor = null;
+    $('#tarea').value = datos.tarea;
+  }
+  if (datos.irc) {
+    $('#ircDireccion').value = datos.irc.direccion;
+    $('#ircPuntos').value = datos.irc.puntos;
+    $('#ircPaso').value = datos.irc.paso;
+  }
+  mostrarOpcionesIRC();
+  if (datos.mep) $('#mep').checked = true;
 }
 
 async function abrirArchivo(archivo) {
@@ -626,7 +640,7 @@ async function abrirArchivo(archivo) {
       nombre = nombre.replace(/\.xyz$/i, '.in');
       texto = generarEntradaPsi4({
         titulo: x.titulo || archivo.name.replace(/\.[^.]+$/, ''), xyz: x.xyz, carga: 0, multiplicidad: 1,
-        metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: $('#tarea').value || 'energia',
+        metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: tareaEfectiva() || 'energia',
         memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true),
       });
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
@@ -643,74 +657,124 @@ async function abrirArchivo(archivo) {
   }
 }
 
-// Entrada .in con la molécula del visor y las opciones del formulario
-async function entradaDesdeFormulario() {
-  if (estado.modificada || !estado.geom) await generar3D();
-  const g = estado.geom;
-  const titulo = $('#titulo').value.trim() || g.formula || 'molecula';
-  const texto = generarEntradaPsi4({
-    titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
-    metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
-    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
-    scan: $('#tarea').value === 'scan' ? opcionesScanForm() : null,
-  });
-  return { texto, nombre: `${nombreSeguro(titulo)}.in` };
-}
+// ---------- Scan relajado en el formulario (casillas excluyentes: un tipo por cálculo) ----------
+const SCAN_UI = {
+  distancia: { natom: 2, simbolo: 'R', unidad: 'Å', paso: 0.1, min: 0.5, max: 6, nombre: 'distancia' },
+  angulo: { natom: 3, simbolo: 'θ', unidad: '°', paso: 5, min: 20, max: 179, nombre: 'ángulo' },
+  diedro: { natom: 4, simbolo: 'φ', unidad: '°', paso: 15, min: -360, max: 360, nombre: 'diedro' },
+};
+const tipoScan = () => $('.scan-tipo:checked')?.value || null;
+// Con una casilla de scan marcada, el cálculo es un scan (cada punto, una optimización restringida)
+const tareaEfectiva = () => (tipoScan() ? 'scan' : $('#tarea').value);
+const CAMPOS_ATOMOS = ['#scanI', '#scanJ', '#scanK', '#scanL'];
+const atomosScanForm = () => CAMPOS_ATOMOS.slice(0, SCAN_UI[tipoScan() || 'distancia'].natom).map((s) => parseInt($(s).value, 10));
+const firmaScan = () => [tipoScan(), ...CAMPOS_ATOMOS, '#scanDesde', '#scanHasta', '#scanPaso'].map((s) => (s && s.startsWith('#') ? $(s).value : s)).join('|');
 
-// ---------- Opciones del scan relajado en el formulario ----------
-const firmaScan = () => ['#scanI', '#scanJ', '#scanDesde', '#scanHasta', '#scanPaso'].map((s) => $(s).value).join('|');
-
-// Distancia actual entre dos átomos (desde 1) de la geometría cargada
-function distanciaActual(i, j) {
+// Valor actual de la coordenada (distancia, ángulo o diedro) en la geometría cargada
+function valorActualScan(tipo, atomos) {
   const c = leerCoordenadas(estado.geom?.xyz || '');
-  if (!c[i - 1] || !c[j - 1] || i === j) return null;
-  return { r: Math.hypot(...c[i - 1].p.map((v, k) => v - c[j - 1].p[k])), etq: `${c[i - 1].e}${i}–${c[j - 1].e}${j}` };
+  if (atomos.some((a) => !c[a - 1]) || new Set(atomos).size !== atomos.length) return null;
+  const P = atomos.map((a) => ({ x: c[a - 1].p[0], y: c[a - 1].p[1], z: c[a - 1].p[2] }));
+  return { v: calcularMedida(P), etq: atomos.map((a) => `${c[a - 1].e}${a}`).join('–') };
 }
 
-// Lista de distancias: la del .in aplicado si el formulario no cambió, o desde/hasta/paso
+// Lista de valores: la del .in aplicado si el formulario no cambió, o desde/hasta/paso
 function opcionesScanForm(silencioso = false) {
-  const atomos = [parseInt($('#scanI').value, 10), parseInt($('#scanJ').value, 10)];
-  if (estado.scanEditor && estado.scanEditor.firma === firmaScan()) return { atomos, valores: estado.scanEditor.valores };
+  const tipo = tipoScan() || 'distancia';
+  const c = SCAN_UI[tipo];
+  const atomos = atomosScanForm();
+  if (estado.scanEditor && estado.scanEditor.firma === firmaScan()) return { tipo, atomos, valores: estado.scanEditor.valores };
   const desde = parseFloat($('#scanDesde').value); const hasta = parseFloat($('#scanHasta').value);
-  const paso = Math.abs(parseFloat($('#scanPaso').value)) || 0.1;
+  const paso = Math.abs(parseFloat($('#scanPaso').value)) || c.paso;
   if (!Number.isFinite(desde) || !Number.isFinite(hasta)) {
-    if (silencioso) return { atomos, valores: [] };
-    throw new Error('Scan: indique las distancias «Desde» y «Hasta».');
+    if (silencioso) return { tipo, atomos, valores: [] };
+    throw new Error(`Scan: indique «Desde» y «Hasta» (${c.unidad}).`);
   }
   const n = Math.round(Math.abs(hasta - desde) / paso) + 1;
   const signo = hasta >= desde ? 1 : -1;
-  const valores = Array.from({ length: Math.min(n, 30) }, (_, k) => +(desde + signo * k * paso).toFixed(4));
-  return { atomos, valores, recortado: n > 30 };
+  const valores = Array.from({ length: Math.min(n, 40) }, (_, k) => +(desde + signo * k * paso).toFixed(4));
+  return { tipo, atomos, valores, recortado: n > 40 };
+}
+
+// Rango inicial razonable alrededor del valor actual
+function rangoInicialScan(tipo, v) {
+  if (tipo === 'distancia') return [Math.max(0.5, v - 0.2).toFixed(2), Math.min(6, v + 0.8).toFixed(2)];
+  if (tipo === 'angulo') return [Math.max(20, Math.round(v) - 20), Math.min(179, Math.round(v) + 20)];
+  const a = Math.round(v);
+  return a + 360 <= 360 ? [a, a + 360] : [a - 360, a];
 }
 
 function ponerScanEnFormulario(scan) {
-  const [i, j] = scan.atomos; const v = scan.valores;
-  $('#scanI').value = i; $('#scanJ').value = j;
+  $$('.scan-tipo').forEach((c) => { c.checked = c.value === scan.tipo; });
+  scan.atomos.forEach((a, k) => { $(CAMPOS_ATOMOS[k]).value = a; });
+  const v = scan.valores;
   $('#scanDesde').value = v[0]; $('#scanHasta').value = v[v.length - 1];
   if (v.length > 1) $('#scanPaso').value = +Math.abs(v[1] - v[0]).toFixed(4);
   estado.scanEditor = { valores: v, firma: firmaScan() }; // conserva listas no uniformes del .in
-  actualizarInfoScan();
+  actualizarScanUI();
 }
 
-function actualizarInfoScan() {
-  if ($('#tarea').value !== 'scan') return;
-  const nat = estado.geom?.natomos || 0;
-  ['#scanI', '#scanJ'].forEach((s) => { $(s).max = nat || ''; });
-  const i = parseInt($('#scanI').value, 10); const j = parseInt($('#scanJ').value, 10);
-  const d = distanciaActual(i, j);
-  if (d && !$('#scanDesde').value && !$('#scanHasta').value) {
-    // Valores iniciales razonables alrededor de la distancia actual
-    $('#scanDesde').value = Math.max(0.5, d.r - 0.2).toFixed(2);
-    $('#scanHasta').value = Math.min(6, d.r + 0.8).toFixed(2);
+// Al marcar una casilla se desmarcan las otras (un solo tipo de scan por cálculo)
+function elegirTipoScan(casilla) {
+  if (casilla.checked) $$('.scan-tipo').forEach((c) => { if (c !== casilla) c.checked = false; });
+  const tipo = tipoScan();
+  estado.scanEditor = null;
+  if (tipo) {
+    $('#scanDesde').value = ''; $('#scanHasta').value = '';
+    $('#scanPaso').value = SCAN_UI[tipo].paso;
+    const sel = estado.seleccion || [];
+    if (sel.length === SCAN_UI[tipo].natom) sel.forEach((i, k) => { $(CAMPOS_ATOMOS[k]).value = i + 1; });
   }
-  let txt = d ? `R(${d.etq}) actual = ${d.r.toFixed(3)} Å. ` : `Elija dos átomos distintos entre 1 y ${nat || '?'} (active «Etiquetas» en el visor para ver la numeración). `;
+  actualizarScanUI();
+}
+
+// Copia los átomos elegidos con «📏 Medir»
+function scanDesdeMedida() {
+  const sel = estado.seleccion || [];
+  const tipo = { 2: 'distancia', 3: 'angulo', 4: 'diedro' }[sel.length];
+  if (!tipo) {
+    $('#scanInfo').textContent = 'Seleccione 2, 3 o 4 átomos con «📏 Medir» en el visor 3D y vuelva a pulsar el botón.';
+    return;
+  }
+  $$('.scan-tipo').forEach((c) => { c.checked = c.value === tipo; });
+  sel.forEach((i, k) => { $(CAMPOS_ATOMOS[k]).value = i + 1; });
+  $('#scanDesde').value = ''; $('#scanHasta').value = '';
+  $('#scanPaso').value = SCAN_UI[tipo].paso;
+  estado.scanEditor = null;
+  actualizarScanUI();
+  programarSincronizacion();
+}
+
+function actualizarScanUI() {
+  const tipo = tipoScan();
+  $('#scanCampos').hidden = !tipo;
+  $('#scanInfo').hidden = !tipo;
+  $('#tarea').disabled = !!tipo;
+  $$('.solo-irc').forEach((el) => { el.hidden = tareaEfectiva() !== 'irc'; });
+  if (!tipo) return;
+  const c = SCAN_UI[tipo];
+  const nat = estado.geom?.natomos || 0;
+  CAMPOS_ATOMOS.forEach((s) => { $(s).max = nat || ''; });
+  $('#scanKCaja').hidden = c.natom < 3;
+  $('#scanLCaja').hidden = c.natom < 4;
+  $('#scanJTexto').textContent = { distancia: 'Átomo j (se mueve)', angulo: 'Átomo j (vértice)', diedro: 'Átomo j' }[tipo];
+  $('#scanKTexto').textContent = tipo === 'angulo' ? 'Átomo k (se mueve)' : 'Átomo k (gira su lado)';
+  $$('.scan-u').forEach((u) => { u.textContent = c.unidad; });
+  const actual = valorActualScan(tipo, atomosScanForm());
+  if (actual && !$('#scanDesde').value && !$('#scanHasta').value) {
+    [$('#scanDesde').value, $('#scanHasta').value] = rangoInicialScan(tipo, actual.v);
+  }
+  const fmt = (v) => (tipo === 'distancia' ? `${v.toFixed(3)} Å` : `${v.toFixed(1)}°`);
+  let txt = actual ? `${c.simbolo}(${actual.etq}) actual = ${fmt(actual.v)}. ` : `Elija ${c.natom} átomos distintos entre 1 y ${nat || '?'} (active «Etiquetas» o use «📏 Medir» en el visor para ver la numeración). `;
   try {
     const o = opcionesScanForm();
-    txt += `${o.valores.length} punto(s): ${o.valores.slice(0, 6).join(', ')}${o.valores.length > 6 ? ', …' : ''} Å${o.recortado ? ' (máximo 30 puntos)' : ''}. `;
+    txt += `${o.valores.length} punto(s): ${o.valores.slice(0, 7).join(', ')}${o.valores.length > 7 ? ', …' : ''} ${c.unidad}${o.recortado ? ' (máximo 40 puntos)' : ''}. `;
+    if (o.valores.some((v) => v < c.min || v > c.max)) txt += `⚠ Los valores deben estar entre ${c.min} y ${c.max} ${c.unidad}. `;
   } catch { /* faltan valores */ }
-  txt += 'En cada punto se fija la distancia i–j (moviendo el fragmento unido a j) y se optimiza el resto.';
+  txt += `En cada punto se fija el ${c.nombre} (moviendo el fragmento del último átomo) y se optimiza el resto; el scan reemplaza al «Tipo de cálculo».`;
   $('#scanInfo').textContent = txt;
 }
+const actualizarInfoScan = actualizarScanUI;
 
 // ---------- Opciones del IRC en el formulario ----------
 function opcionesIRCForm() {
@@ -720,42 +784,59 @@ function opcionesIRCForm() {
 }
 
 function mostrarOpcionesIRC() {
-  const tarea = $('#tarea').value;
-  $$('.solo-irc').forEach((el) => { el.hidden = tarea !== 'irc'; });
-  $$('.solo-scan').forEach((el) => { el.hidden = tarea !== 'scan'; });
-  actualizarInfoScan();
+  actualizarScanUI();
 }
 
-async function verEntradaActual() {
+// ---------- Código sincronizado con el formulario y un solo botón «Ejecutar» ----------
+// Lo que se ejecuta es el código de la ventana «Código de entrada». Mientras no se edite a mano,
+// se regenera al generar la geometría 3D y al cambiar el formulario. Al lanzar (o abrir) un
+// cálculo, la ventana muestra el código de ese trabajo, tal como lo recibió el servidor.
+const editadoAMano = () => !!textoEditor() && editor.aplicado !== null && textoEditor() !== editor.aplicado;
+
+// Código .in con la geometría actual y las opciones del formulario (sin pedir nada al servidor)
+function codigoDesdeFormulario() {
+  const g = estado.geom;
+  const titulo = $('#titulo').value.trim() || g.formula || 'molecula';
+  const tarea = tareaEfectiva();
+  const texto = generarEntradaPsi4({
+    titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
+    metodo: $('#metodo').value, base: $('#base').value, tarea,
+    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
+    scan: tarea === 'scan' ? opcionesScanForm() : null,
+  });
+  return { texto, nombre: `${nombreSeguro(titulo)}.in` };
+}
+
+function sincronizarCodigo({ forzar = false, desplazar = false } = {}) {
+  estado.errorFormulario = null;
+  if (!estado.geom || !estado.opciones || estado.modificada) return false;
+  if (editadoAMano() && !forzar) { validarEditor(); return false; }
+  let r; let datos;
   try {
-    // Si el editor ya tiene código sin aplicar, o coincide con lo actual, se muestra tal cual
-    if (textoEditor() && editor.aplicado !== null) {
-      const d = (() => { try { return leerEntradaPsi4(textoEditor()); } catch { return null; } })();
-      if (textoEditor() !== editor.aplicado || (d && !formularioDistinto(d))) {
-        $('#tarjetaEditor').hidden = false;
-        validarEditor();
-        $('#tarjetaEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        return;
-      }
-    }
-    const { texto, nombre } = await entradaDesdeFormulario();
-    abrirEditor(texto, nombre);
-    marcarAplicado(texto, leerEntradaPsi4(texto));
+    r = codigoDesdeFormulario();
+    datos = leerEntradaPsi4(r.texto);
   } catch (e) {
-    alert(e.message);
+    estado.errorFormulario = e.message; // p. ej. un scan sin «Desde»/«Hasta»: se conserva el código anterior
+    if (textoEditor()) validarEditor();
+    return false;
   }
+  if (textoEditor() !== r.texto || editor.trabajo) abrirEditor(r.texto, r.nombre, { desplazar });
+  marcarAplicado(r.texto, datos);
+  return true;
+}
+
+let temporizadorCodigo = null;
+function programarSincronizacion() {
+  clearTimeout(temporizadorCodigo);
+  temporizadorCodigo = setTimeout(() => sincronizarCodigo(), 250);
 }
 
 async function regenerarEditor() {
-  if (textoEditor() !== editor.aplicado && !confirm('El código tiene cambios sin aplicar. ¿Reemplazarlo con la molécula y las opciones del formulario?')) return;
-  try {
-    const { texto } = await entradaDesdeFormulario();
-    const nombre = editor.nombre;
-    abrirEditor(texto, nombre || `${nombreSeguro($('#titulo').value)}.in`);
-    marcarAplicado(texto, leerEntradaPsi4(texto));
-  } catch (e) {
-    alert(e.message);
+  if (estado.modificada || !estado.geom) {
+    try { await generar3D(); } catch (e) { alert(e.message); return; }
   }
+  if (editadoAMano() && !confirm('El código fue editado a mano. ¿Reemplazarlo con la molécula y las opciones del formulario?')) return;
+  if (!sincronizarCodigo({ forzar: true }) && estado.errorFormulario) alert(estado.errorFormulario);
 }
 
 async function aplicarDesdeEditor(boton) {
@@ -773,12 +854,25 @@ async function aplicarDesdeEditor(boton) {
   }
 }
 
-async function ejecutarEditor() {
-  const boton = $('#editorEjecutar');
+// El único botón para calcular: ejecuta el código de la ventana
+async function ejecutar() {
+  const boton = $('#calcular');
   if (boton.disabled) return;
-  if (!(await aplicarDesdeEditor(boton))) return;
   boton.disabled = true;
   try {
+    if (!estado.geom || estado.modificada) {
+      // Dibujo nuevo o editado: se genera la geometría 3D y, con ella, el código
+      const usarDibujo = !editadoAMano() || confirm('Cambió el dibujo, pero el código fue editado a mano. ¿Generar la geometría del dibujo y regenerar el código? (Cancelar ejecuta el código tal como está.)');
+      if (usarDibujo) {
+        await generar3D();
+        sincronizarCodigo({ forzar: true });
+      }
+    }
+    if (!textoEditor() && !sincronizarCodigo({ forzar: true })) throw new Error(estado.errorFormulario || 'No hay código para ejecutar.');
+    const datos = validarEditor();
+    if (!datos) { $('#editorTexto').focus(); throw new Error('Corrija el código antes de ejecutar (vea el mensaje bajo el código).'); }
+    // Si el código no coincide con la molécula y el formulario, se aplica primero (el código manda)
+    if (editadoAMano() || formularioDistinto(datos)) await aplicarEditor();
     await lanzarCalculo();
     $('#seccionResultados').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
@@ -788,9 +882,31 @@ async function ejecutarEditor() {
   }
 }
 
+// Muestra en la ventana el código del trabajo que se sigue (el .in que guardó el servidor)
+async function mostrarCodigoTrabajo(id) {
+  let texto;
+  try { texto = await api(`/api/calculos/${id}/archivo/entrada.in`); } catch { return; }
+  if (estado.trabajo !== id) return; // mientras tanto se abrió otro cálculo
+  let datos;
+  try { datos = leerEntradaPsi4(texto); } catch { return; }
+  const info = historial().find((h) => h.id === id) || {};
+  const coords = leerCoordenadas(datos.xyz);
+  const g = estado.geom || {};
+  const mismaMolecula = leerCoordenadas(g.xyz || '').map((a) => a.e).join() === coords.map((a) => a.e).join();
+  // La geometría del trabajo pasa a ser la actual (para regenerar el código o volver a ejecutarlo)
+  estado.geom = { ...(mismaMolecula ? g : {}), xyz: datos.xyz, natomos: coords.length, formula: info.formula || g.formula || datos.titulo, smiles: mismaMolecula ? g.smiles : '' };
+  if (!mismaMolecula) estado.seleccion = [];
+  estado.modificada = false;
+  abrirEditor(texto, `${nombreSeguro(info.titulo || datos.titulo)}.in`, { desplazar: false, trabajo: { id, titulo: info.titulo || datos.titulo } });
+  if (info.titulo) $('#titulo').value = info.titulo;
+  ponerFormulario(datos, info.titulo || datos.titulo);
+  marcarAplicado(texto, datos);
+  actualizarEstimacion();
+}
+
 function teclasEditor(e) {
   const ta = e.target;
-  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ejecutarEditor(); return; }
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); ejecutar(); return; }
   if (e.key === 'Tab' && !e.shiftKey && !e.altKey && !e.ctrlKey) {
     e.preventDefault();
     ta.setRangeText('  ', ta.selectionStart, ta.selectionEnd, 'end');
@@ -835,11 +951,11 @@ async function lanzarCalculo() {
   const cuerpo = {
     xyz: g.xyz, formula: g.formula, smiles: g.smiles,
     titulo: $('#titulo').value.trim() || g.formula,
-    metodo: $('#metodo').value, base: $('#base').value, tarea: $('#tarea').value,
+    metodo: $('#metodo').value, base: $('#base').value, tarea: tareaEfectiva(),
     carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
     mep: $('#mep').checked,
-    irc: $('#tarea').value === 'irc' ? opcionesIRCForm() : undefined,
-    scan: $('#tarea').value === 'scan' ? opcionesScanForm() : undefined,
+    irc: tareaEfectiva() === 'irc' ? opcionesIRCForm() : undefined,
+    scan: tareaEfectiva() === 'scan' ? opcionesScanForm() : undefined,
   };
   const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
   // En un IRC los enlaces cambian a lo largo del camino: no se fijan los del dibujo
@@ -847,19 +963,6 @@ async function lanzarCalculo() {
   guardarEnHistorial(t);
   seguir(t.id);
   return t;
-}
-
-async function calcular(ev) {
-  ev.preventDefault();
-  const btn = $('#calcular');
-  btn.disabled = true;
-  try {
-    await lanzarCalculo();
-  } catch (e) {
-    alert(e.message);
-  } finally {
-    btn.disabled = false;
-  }
 }
 
 function pildora(t) {
@@ -878,6 +981,7 @@ function cronometro() {
 function seguir(id) {
   const token = ++estado.token;
   estado.trabajo = id;
+  mostrarCodigoTrabajo(id); // la ventana de código muestra el .in de este trabajo (IRC, frecuencias, historial…)
   estado.resultado = null;
   estado.vivo = null;
   detenerVivo();
@@ -1148,10 +1252,12 @@ function panelResumen(t, r) {
   html += cifra({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan' }[r.tarea] || 'Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
   const sc = r.scan;
   if (sc) {
-    const v = sc.puntos.map((p) => p.r);
-    html += cifra(`Scan R(${esc(sc.etiqueta)})`, `${v.length} punto(s)`, `de ${fx(v[0], 3)} a ${fx(v[v.length - 1], 3)} Å`);
-    html += cifra('Mínimo del scan', `R = ${fx(sc.r_minimo, 3)} Å`, 'Geometría usada para orbitales, cargas y superficies');
-    html += cifra('Máximo del scan', `R = ${fx(sc.r_maximo, 3)} Å`, `${fx(sc.rango_kcal, 2)} kcal/mol por encima del mínimo`);
+    const S = sc.simbolo || 'R'; const U = sc.unidad || 'Å'; const dec = U === 'Å' ? 3 : 1;
+    const v = sc.puntos.map((p) => p.valor ?? p.r);
+    const nombreTipo = { distancia: 'distancia', angulo: 'ángulo', diedro: 'diedro' }[sc.tipo || 'distancia'];
+    html += cifra(`Scan de ${nombreTipo} ${S}(${esc(sc.etiqueta)})`, `${v.length} punto(s)`, `de ${fx(v[0], dec)} a ${fx(v[v.length - 1], dec)} ${U}`);
+    html += cifra('Mínimo del scan', `${S} = ${fx(sc.valor_minimo ?? sc.r_minimo, dec)} ${U}`, 'Geometría usada para orbitales, cargas y superficies');
+    html += cifra('Máximo del scan', `${S} = ${fx(sc.valor_maximo ?? sc.r_maximo, dec)} ${U}`, `${fx(sc.rango_kcal, 2)} kcal/mol por encima del mínimo`);
     if (sc.no_convergidos) html += cifra('Puntos sin converger', String(sc.no_convergidos), 'Marcados en naranja en la pestaña «Scan»');
   }
   const irc = r.irc;
@@ -1701,9 +1807,12 @@ function panelIRC(t, r) {
 function panelScan(t, r) {
   const panel = $('[data-panel="optimizacion"]');
   const sc = r.scan;
-  const pts = sc.puntos.filter((p) => p.energia != null);
+  const S = sc.simbolo || 'R'; const U = sc.unidad || 'Å'; const dec = U === 'Å' ? 3 : 1;
+  const nombreTipo = { distancia: 'la distancia', angulo: 'el ángulo', diedro: 'el diedro' }[sc.tipo || 'distancia'];
+  const todos = sc.puntos.map((p) => ({ ...p, v: p.valor ?? p.r, vf: p.valor_final ?? p.r_final }));
+  const pts = todos.filter((p) => p.energia != null);
   const W = 760; const H = 280; const m = { l: 62, r: 16, t: 18, b: 44 };
-  const xs = pts.map((p) => p.r); const ys = pts.map((p) => p.de_min_kcal);
+  const xs = pts.map((p) => p.v); const ys = pts.map((p) => p.de_min_kcal);
   const xmin = Math.min(...xs); const xmax = Math.max(...xs);
   const ymin = 0; const ymax = Math.max(...ys, 0.1);
   const X = (s) => (xmax > xmin ? m.l + ((s - xmin) / (xmax - xmin)) * (W - m.l - m.r) : (W + m.l) / 2);
@@ -1713,13 +1822,13 @@ function panelScan(t, r) {
     const v = ymin + (k / 4) * (ymax - ymin);
     svg += `<line class="rejilla" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`;
   }
-  pts.forEach((p) => { svg += `<text x="${X(p.r)}" y="${H - m.b + 16}" text-anchor="middle">${p.r.toFixed(2)}</text>`; });
+  pts.forEach((p) => { svg += `<text x="${X(p.v)}" y="${H - m.b + 16}" text-anchor="middle">${p.v.toFixed(U === 'Å' ? 2 : 0)}</text>`; });
   svg += `<line class="eje" x1="${m.l}" x2="${W - m.r}" y1="${H - m.b}" y2="${H - m.b}"/>`;
-  svg += `<text x="${(W + m.l) / 2}" y="${H - 6}" text-anchor="middle">R(${esc(sc.etiqueta)}) (Å)</text>`;
+  svg += `<text x="${(W + m.l) / 2}" y="${H - 6}" text-anchor="middle">${S}(${esc(sc.etiqueta)}) (${U})</text>`;
   svg += `<text x="14" y="${(H - m.b + m.t) / 2}" text-anchor="middle" transform="rotate(-90 14 ${(H - m.b + m.t) / 2})">E − E(mín) (kcal/mol)</text>`;
-  if (pts.length > 1) svg += `<path class="curva" d="M${pts.map((p) => `${X(p.r).toFixed(1)},${Y(p.de_min_kcal).toFixed(1)}`).join('L')}"/>`;
+  if (pts.length > 1) svg += `<path class="curva" d="M${pts.map((p) => `${X(p.v).toFixed(1)},${Y(p.de_min_kcal).toFixed(1)}`).join('L')}"/>`;
   pts.forEach((p, i) => {
-    svg += `<circle class="punto${p.convergio ? '' : ' sin-converger'}" data-paso="${i}" cx="${X(p.r)}" cy="${Y(p.de_min_kcal)}" r="5.5" style="cursor:pointer"><title>R = ${p.r.toFixed(3)} Å · E = ${p.energia.toFixed(8)} Eh · ΔE(mín) = ${p.de_min_kcal.toFixed(2)} kcal/mol${p.convergio ? '' : ' · no convergió'}</title></circle>`;
+    svg += `<circle class="punto${p.convergio ? '' : ' sin-converger'}" data-paso="${i}" cx="${X(p.v)}" cy="${Y(p.de_min_kcal)}" r="5.5" style="cursor:pointer"><title>${S} = ${p.v.toFixed(dec)} ${U} · E = ${p.energia.toFixed(8)} Eh · ΔE(mín) = ${p.de_min_kcal.toFixed(2)} kcal/mol${p.convergio ? '' : ' · no convergió'}</title></circle>`;
   });
   svg += '</svg>';
   panel.innerHTML = `${svg}
@@ -1730,15 +1839,15 @@ function panelScan(t, r) {
       <button class="btn sec chico" type="button" id="bajarScanXYZ" title="Todas las geometrías del scan como XYZ de varios cuadros (Avogadro, Jmol, VMD)">XYZ animado</button>
       <span id="infoPaso" class="nota"></span>
     </div>
-    <div class="tabla-scroll"><table><thead><tr><th class="num">R (Å)</th><th class="num">R final (Å)</th><th class="num">E (E<sub>h</sub>)</th><th class="num">ΔE vs. 1.º (kcal/mol)</th><th class="num">ΔE vs. mín (kcal/mol)</th><th></th></tr></thead><tbody>
-      ${sc.puntos.map((p, i) => `<tr data-fila="${i}"><td class="num">${p.r.toFixed(3)}</td><td class="num">${fx(p.r_final, 4)}</td><td class="num">${fx(p.energia, 8)}</td><td class="num">${fx(p.de_kcal, 3)}</td><td class="num">${fx(p.de_min_kcal, 3)}</td><td>${p.convergio ? '' : `<span class="aviso-chico" title="${esc(p.nota)}">no convergió</span>`}</td></tr>`).join('')}
+    <div class="tabla-scroll"><table><thead><tr><th class="num">${S} (${U})</th><th class="num">${S} final (${U})</th><th class="num">E (E<sub>h</sub>)</th><th class="num">ΔE vs. 1.º (kcal/mol)</th><th class="num">ΔE vs. mín (kcal/mol)</th><th></th></tr></thead><tbody>
+      ${todos.map((p, i) => `<tr data-fila="${i}"><td class="num">${p.v.toFixed(dec)}</td><td class="num">${fx(p.vf, dec + 1)}</td><td class="num">${fx(p.energia, 8)}</td><td class="num">${fx(p.de_kcal, 3)}</td><td class="num">${fx(p.de_min_kcal, 3)}</td><td>${p.convergio ? '' : `<span class="aviso-chico" title="${esc(p.nota)}">no convergió</span>`}</td></tr>`).join('')}
     </tbody></table></div>
-    <p class="nota">En cada punto la distancia ${esc(sc.etiqueta)} queda fija y el resto de la molécula se optimiza. La misma tabla está al final de la salida de Psi4 (.out), en «SCAN RELAJADO».</p>`;
+    <p class="nota">En cada punto ${nombreTipo} ${esc(sc.etiqueta)} queda fijo y el resto de la molécula se optimiza. La misma tabla está al final de la salida de Psi4 (.out), en «SCAN RELAJADO».</p>`;
   const verPaso = (i) => {
     i = Math.max(0, Math.min(pts.length - 1, i));
     const p = pts[i];
     $('#pasoOpt').value = i;
-    $('#infoPaso').textContent = `R = ${p.r.toFixed(3)} Å · E = ${p.energia.toFixed(8)} Eh · ΔE(mín) = ${p.de_min_kcal.toFixed(2)} kcal/mol`;
+    $('#infoPaso').textContent = `${S} = ${p.v.toFixed(dec)} ${U} · E = ${p.energia.toFixed(8)} Eh · ΔE(mín) = ${p.de_min_kcal.toFixed(2)} kcal/mol`;
     $$('[data-panel="optimizacion"] [data-paso]').forEach((c) => c.classList.toggle('activo', c.dataset.paso === String(i)));
     const v = estado.visor;
     v.stopAnimate();
@@ -1748,7 +1857,7 @@ function panelScan(t, r) {
     v.removeAllModels();
     v.addModel(xyzCompleto(p.xyz), 'xyz');
     aplicarEstilo();
-    $('#etiquetaModelo').textContent = `Scan · punto ${i + 1} de ${pts.length} · R(${sc.etiqueta}) = ${p.r.toFixed(2)} Å`;
+    $('#etiquetaModelo').textContent = `Scan · punto ${i + 1} de ${pts.length} · ${S}(${sc.etiqueta}) = ${p.v.toFixed(dec)} ${U}`;
   };
   const detener = () => { clearInterval(estado.reproductor); estado.reproductor = null; $('#reproducirOpt').textContent = '▶ Reproducir scan'; };
   $('#pasoOpt').addEventListener('input', (e) => { detener(); verPaso(parseInt(e.target.value, 10)); });
@@ -1769,14 +1878,14 @@ function panelScan(t, r) {
     }, 450);
   });
   $('#bajarScanCSV').addEventListener('click', () => {
-    const filas = [['R_A', 'R_final_A', 'E_Eh', 'dE_primero_kcal_mol', 'dE_minimo_kcal_mol', 'convergio']];
-    sc.puntos.forEach((p) => filas.push([p.r.toFixed(4), fx(p.r_final, 5), fx(p.energia, 10), fx(p.de_kcal, 4), fx(p.de_min_kcal, 4), p.convergio ? 'si' : 'no']));
+    const filas = [[U === 'Å' ? 'R_A' : `${sc.tipo}_grados`, U === 'Å' ? 'R_final_A' : `${sc.tipo}_final_grados`, 'E_Eh', 'dE_primero_kcal_mol', 'dE_minimo_kcal_mol', 'convergio']];
+    todos.forEach((p) => filas.push([p.v.toFixed(4), fx(p.vf, 5), fx(p.energia, 10), fx(p.de_kcal, 4), fx(p.de_min_kcal, 4), p.convergio ? 'si' : 'no']));
     descargar(filas.map((f) => f.join(',')).join('\n') + '\n', `${nombreSeguro(t.titulo)}_scan.csv`, 'text/csv');
   });
   $('#bajarScanXYZ').addEventListener('click', () => {
     const marcos = pts.map((p) => {
       const l = p.xyz.trim().split(/\r?\n/);
-      return `${l.length}\nScan R(${sc.etiqueta}) = ${p.r.toFixed(4)} A  E = ${p.energia.toFixed(8)}\n${l.join('\n')}`;
+      return `${l.length}\nScan ${S}(${sc.etiqueta}) = ${p.v.toFixed(4)} ${U === 'Å' ? 'A' : 'grados'}  E = ${p.energia.toFixed(8)}\n${l.join('\n')}`;
     });
     descargar(`${marcos.join('\n')}\n`, `${nombreSeguro(t.titulo)}_scan.xyz`);
   });
@@ -1869,9 +1978,9 @@ function eventos() {
     generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; });
   });
   $('#smiles').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); $('#leerSmiles').click(); } });
-  $('#generar3d').addEventListener('click', () => generar3D().catch((e) => { $('#infoMolecula').textContent = e.message; }));
-  $('#formCalculo').addEventListener('submit', calcular);
-  $('#verEntrada').addEventListener('click', verEntradaActual);
+  $('#generar3d').addEventListener('click', () => generar3D({ explicito: true }).catch((e) => { $('#infoMolecula').textContent = e.message; }));
+  $('#formCalculo').addEventListener('submit', (e) => e.preventDefault());
+  $('#calcular').addEventListener('click', ejecutar);
   // Editor de la entrada
   const ta = $('#editorTexto');
   let temporizador = null;
@@ -1879,11 +1988,12 @@ function eventos() {
   ta.addEventListener('scroll', () => { $('#editorLineas').scrollTop = ta.scrollTop; });
   ta.addEventListener('keydown', teclasEditor);
   $('#editorAplicar').addEventListener('click', (e) => aplicarDesdeEditor(e.currentTarget));
-  $('#editorEjecutar').addEventListener('click', ejecutarEditor);
   $('#editorDesdeForm').addEventListener('click', regenerarEditor);
   $('#editorGuardar').addEventListener('click', () => descargar(textoEditor(), editor.nombre || `${nombreSeguro($('#titulo').value)}.in`));
-  $('#editorCerrar').addEventListener('click', () => { $('#tarjetaEditor').hidden = true; });
-  $('#formCalculo').addEventListener('change', () => { if (editorAbierto()) validarEditor(); });
+  // El código sigue al formulario (salvo que se haya editado a mano)
+  ['input', 'change'].forEach((ev) => $('#formCalculo').addEventListener(ev, programarSincronizacion));
+  $$('.scan-tipo').forEach((c) => c.addEventListener('change', () => elegirTipoScan(c)));
+  $('#scanDeMedida').addEventListener('click', scanDesdeMedida);
   $('#abrirArchivo').addEventListener('click', () => $('#archivoEntrada').click());
   $('#archivoEntrada').addEventListener('change', (e) => abrirArchivo(e.target.files[0]));
   const tarjeta = $('#tarjetaMolecula');
@@ -1896,7 +2006,7 @@ function eventos() {
   });
   ['#metodo', '#base', '#tarea', '#ircDireccion', '#ircPuntos'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
   $('#tarea').addEventListener('change', mostrarOpcionesIRC);
-  ['#scanI', '#scanJ', '#scanDesde', '#scanHasta', '#scanPaso'].forEach((s) => $(s).addEventListener('input', actualizarEstimacion));
+  ['#scanI', '#scanJ', '#scanK', '#scanL', '#scanDesde', '#scanHasta', '#scanPaso'].forEach((s) => $(s).addEventListener('input', actualizarEstimacion));
 
   $('#estilo').addEventListener('change', () => {
     if (estado.modoActivo) animarModo(estado.modoActivo); else aplicarEstilo();

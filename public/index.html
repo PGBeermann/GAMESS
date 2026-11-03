@@ -114,28 +114,6 @@
       </div>
     </section>
 
-    <section class="tarjeta ancho" aria-labelledby="tEditor" id="tarjetaEditor" hidden>
-      <div class="tarjeta-cab">
-        <h2 id="tEditor"><span class="paso">.in</span> Entrada de Psi4 <span class="nombre-archivo" id="nombreEditor"></span></h2>
-        <div class="grupo-btn">
-          <button class="btn sec chico" id="editorDesdeForm" type="button" title="Reescribe el código con la molécula del visor y las opciones del formulario">Regenerar desde el formulario</button>
-          <button class="btn sec chico" id="editorGuardar" type="button" title="Descarga este código como archivo .in">Guardar .in</button>
-          <button class="btn sec chico" id="editorCerrar" type="button" title="Cerrar el editor">Cerrar</button>
-        </div>
-      </div>
-      <div class="editor">
-        <pre class="editor-lineas" id="editorLineas" aria-hidden="true"></pre>
-        <textarea id="editorTexto" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-label="Código de la entrada de Psi4" aria-describedby="editorEstado"></textarea>
-      </div>
-      <div class="editor-estado" id="editorEstado" role="status"></div>
-      <div class="acciones">
-        <span class="info">Edite el código y ejecútelo. <kbd>Ctrl</kbd>+<kbd>Enter</kbd> también ejecuta.</span>
-        <span class="espaciador"></span>
-        <button class="btn sec" id="editorAplicar" type="button" title="Actualiza la molécula 3D y el formulario con este código, sin calcular">Aplicar cambios</button>
-        <button class="btn grande" id="editorEjecutar" type="button">▶ Ejecutar cálculo</button>
-      </div>
-    </section>
-
     <section class="tarjeta ancho" aria-labelledby="t3">
       <div class="tarjeta-cab">
         <h2 id="t3"><span class="paso">2</span> Configure el cálculo Psi4</h2>
@@ -173,34 +151,53 @@
           <input id="ircPaso" type="number" min="0.05" max="0.5" step="0.05" value="0.2">
         </label>
         <p class="nota solo-irc nota-irc" hidden>El IRC parte de un <b>estado de transición</b> (una sola frecuencia imaginaria) y sigue el camino de mínima energía hacia reactivos y productos. Calcule antes el TS con «Estado de transición (TS) + frecuencias» y use su botón «Calcular IRC desde este TS».</p>
-        <label class="solo-scan" hidden>Átomo i
-          <input id="scanI" type="number" min="1" step="1" value="1">
-        </label>
-        <label class="solo-scan" hidden>Átomo j (se mueve)
-          <input id="scanJ" type="number" min="1" step="1" value="2">
-        </label>
-        <label class="solo-scan" hidden>Desde (Å)
-          <input id="scanDesde" type="number" min="0.5" max="6" step="0.05">
-        </label>
-        <label class="solo-scan" hidden>Hasta (Å)
-          <input id="scanHasta" type="number" min="0.5" max="6" step="0.05">
-        </label>
-        <label class="solo-scan" hidden>Paso (Å)
-          <input id="scanPaso" type="number" min="0.01" max="1" step="0.01" value="0.1">
-        </label>
-        <p class="nota solo-scan nota-irc" id="scanInfo" hidden></p>
+        <fieldset class="scan-caja" id="scanCaja">
+          <legend>Scan relajado <span class="info">(opcional · un solo tipo por cálculo)</span></legend>
+          <div class="scan-tipos" role="group" aria-label="Tipo de scan">
+            <label class="chk"><input type="checkbox" class="scan-tipo" value="distancia"> Distancia de enlace <span class="info">(2 átomos)</span></label>
+            <label class="chk"><input type="checkbox" class="scan-tipo" value="angulo"> Ángulo de enlace <span class="info">(3 átomos)</span></label>
+            <label class="chk"><input type="checkbox" class="scan-tipo" value="diedro"> Ángulo diedro <span class="info">(4 átomos)</span></label>
+          </div>
+          <div class="scan-campos" id="scanCampos" hidden>
+            <label>Átomo i <input id="scanI" type="number" min="1" step="1" value="1"></label>
+            <label><span id="scanJTexto">Átomo j</span> <input id="scanJ" type="number" min="1" step="1" value="2"></label>
+            <label id="scanKCaja"><span id="scanKTexto">Átomo k</span> <input id="scanK" type="number" min="1" step="1" value="3"></label>
+            <label id="scanLCaja">Átomo l <input id="scanL" type="number" min="1" step="1" value="4"></label>
+            <label>Desde (<span class="scan-u">Å</span>) <input id="scanDesde" type="number" step="any"></label>
+            <label>Hasta (<span class="scan-u">Å</span>) <input id="scanHasta" type="number" step="any"></label>
+            <label>Paso (<span class="scan-u">Å</span>) <input id="scanPaso" type="number" step="any" min="0.01" value="0.1"></label>
+            <button class="btn sec chico" id="scanDeMedida" type="button" title="Copia los átomos seleccionados con «📏 Medir» en el visor 3D">Usar átomos de «Medir»</button>
+          </div>
+          <p class="nota" id="scanInfo" hidden></p>
+        </fieldset>
         <label class="chk largo"><input type="checkbox" id="mep" checked> Calcular potencial electrostático (MEP)</label>
-        <div class="acciones fin">
-          <span class="info" id="estimacion"></span>
-          <button class="btn sec" id="verEntrada" type="button" title="Muestra el archivo .in de Psi4 con esta molécula y estas opciones, para revisarlo, editarlo o guardarlo">Ver / editar entrada (.in)</button>
-          <button class="btn grande" id="calcular" type="submit">Calcular con Psi4</button>
-        </div>
       </form>
+    </section>
+
+    <section class="tarjeta ancho" aria-labelledby="tEditor" id="tarjetaEditor">
+      <div class="tarjeta-cab">
+        <h2 id="tEditor"><span class="paso">3</span> Código de entrada (.in) y ejecución <span class="nombre-archivo" id="nombreEditor"></span></h2>
+        <div class="grupo-btn">
+          <button class="btn sec chico" id="editorDesdeForm" type="button" title="Reescribe el código con la molécula del visor y las opciones del formulario">Regenerar desde el formulario</button>
+          <button class="btn sec chico" id="editorGuardar" type="button" title="Descarga este código como archivo .in">Guardar .in</button>
+        </div>
+      </div>
+      <div class="editor">
+        <pre class="editor-lineas" id="editorLineas" aria-hidden="true"></pre>
+        <textarea id="editorTexto" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-label="Código de la entrada de Psi4" aria-describedby="editorEstado" placeholder="Pulse «Generar geometría 3D» (o abra un archivo .in): el código se genera con las opciones del formulario y se actualiza al cambiarlas."></textarea>
+      </div>
+      <div class="editor-estado" id="editorEstado" role="status"></div>
+      <div class="acciones">
+        <span class="info" id="estimacion"></span>
+        <span class="espaciador"></span>
+        <button class="btn sec" id="editorAplicar" type="button" title="Actualiza la molécula 3D y el formulario con este código, sin calcular">Aplicar cambios</button>
+        <button class="btn grande" id="calcular" type="button" title="Ejecuta este código (también Ctrl+Enter dentro del código)">▶ Ejecutar cálculo</button>
+      </div>
     </section>
 
     <section class="tarjeta ancho" aria-labelledby="t4" id="seccionResultados" hidden>
       <div class="tarjeta-cab">
-        <h2 id="t4"><span class="paso">3</span> Resultados</h2>
+        <h2 id="t4"><span class="paso">4</span> Resultados</h2>
         <div class="grupo-btn">
           <span class="pildora" id="pildoraEstado"></span>
           <button class="btn sec chico peligro" id="cancelar" type="button" hidden>Cancelar</button>
