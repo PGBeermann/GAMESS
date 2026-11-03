@@ -455,9 +455,10 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
         p["de_min_kcal"] = None if p["energia"] is None else (p["energia"] - e_min) * HARTREE_KCAL
 
     # Tabla en el .out (como haría un script de Psi4 con psi4.core.print_out)
-    nombre = {"distancia": "distancia", "angulo": "ángulo", "diedro": "diedro"}[tipo]
+    congelado = {"distancia": "la distancia queda congelada", "angulo": "el ángulo queda congelado",
+                  "diedro": "el diedro queda congelado"}[tipo]
     psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}) =====\n")
-    psi4.core.print_out(f"ΔE respecto al primer punto; el {nombre} queda congelado ({opcion}) en cada optimización.\n\n")
+    psi4.core.print_out(f"ΔE respecto al primer punto; {congelado} ({opcion}) en cada optimización.\n\n")
     for p in puntos:
         if p["energia"] is None:
             psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   sin energía ({p['nota']})\n")

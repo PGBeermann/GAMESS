@@ -783,7 +783,7 @@ function actualizarScanUI() {
     txt += `${o.valores.length} punto(s): ${o.valores.slice(0, 7).join(', ')}${o.valores.length > 7 ? ', …' : ''} ${c.unidad}${o.recortado ? ' (máximo 40 puntos)' : ''}. `;
     if (o.valores.some((v) => v < c.min || v > c.max)) txt += `⚠ Los valores deben estar entre ${c.min} y ${c.max} ${c.unidad}. `;
   } catch { /* faltan valores */ }
-  txt += `En cada punto se fija el ${c.nombre} (moviendo el fragmento del último átomo) y se optimiza el resto; el scan reemplaza al «Tipo de cálculo».`;
+  txt += `En cada punto se fija ${tipo === 'distancia' ? 'la' : 'el'} ${c.nombre} (el último átomo se mueve con todo lo que cuelga de él) y se optimiza el resto; el scan reemplaza al «Tipo de cálculo».`;
   $('#scanInfo').textContent = txt;
 }
 const actualizarInfoScan = actualizarScanUI;
