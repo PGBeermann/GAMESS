@@ -2031,32 +2031,53 @@ function abrirDialogoMolden({ alTerminar = false } = {}) {
   $('#dlgMoldenNota').hidden = conCarpeta;
   $('#dlgMoldenEstado').textContent = '';
   $('#dlgMoldenGuardar').disabled = false;
+  $('#dlgMoldenDescargar').disabled = false;
+  $('#dlgMoldenDescargar').hidden = !conCarpeta; // sin selector de carpeta, el botón principal ya descarga
   vistaMolden();
   const dlg = $('#dlgMolden');
   if (!dlg.open) dlg.showModal();
   $('#dlgMoldenBase').select();
 }
-async function guardarMoldenNumerados() {
+// sinCarpeta: descarga los archivos numerados en la carpeta de descargas (sin elegir carpeta)
+async function guardarMoldenNumerados({ sinCarpeta = false } = {}) {
   const t = estado.infoTrabajo; const nombres = estado.resultado?.iboview?.puntos_molden || [];
   const n = nombres.length;
-  if (!t || !n) return;
+  const info = $('#dlgMoldenEstado');
+  if (!t || !n) { info.textContent = 'No hay archivos .molden por punto en este cálculo.'; return; }
   const base = baseMolden();
-  const boton = $('#dlgMoldenGuardar'); const info = $('#dlgMoldenEstado');
-  boton.disabled = true;
+  const botones = [$('#dlgMoldenGuardar'), $('#dlgMoldenDescargar')];
+  botones.forEach((b) => { b.disabled = true; });
   try {
     let carpeta = null;
-    if (typeof window.showDirectoryPicker === 'function') {
+    if (!sinCarpeta && typeof window.showDirectoryPicker === 'function') {
+      info.textContent = 'Elija la carpeta en la ventana de Chrome…';
       try {
-        carpeta = await window.showDirectoryPicker({ id: 'psi4-molden', mode: 'readwrite' });
+        carpeta = await window.showDirectoryPicker({ id: 'psi4-molden', mode: 'readwrite', startIn: 'documents' });
       } catch (e) {
-        if (e.name === 'AbortError') return; // eligió «Cancelar»
-        throw e;
+        if (e.name !== 'AbortError') throw e;
+        // Chrome da AbortError tanto si se cancela como si rechaza la carpeta elegida
+        info.textContent = 'No se guardó ningún archivo: no se eligió una carpeta o Chrome no permitió usarla. '
+          + 'Chrome no deja guardar directamente en Escritorio, Documentos, Descargas ni en la carpeta personal: '
+          + 'dentro del selector, cree (o elija) una subcarpeta, p. ej. Documentos\\Molden, entre en ella y pulse «Seleccionar carpeta». '
+          + 'Si Chrome pregunta si el sitio puede editar archivos, responda que sí. '
+          + 'También puede usar «Descargar sin elegir carpeta».';
+        return;
       }
+      // Permiso de escritura (Chrome lo pide al elegir la carpeta; si no se concedió, se pide de nuevo)
+      if (carpeta.queryPermission && (await carpeta.queryPermission({ mode: 'readwrite' })) !== 'granted'
+          && (await carpeta.requestPermission({ mode: 'readwrite' })) !== 'granted') {
+        info.textContent = `No se guardó ningún archivo: Chrome no dio permiso para escribir en «${carpeta.name}». Vuelva a intentarlo y acepte «Editar archivos», o use «Descargar sin elegir carpeta».`;
+        return;
+      }
+      info.textContent = `Carpeta elegida: «${carpeta.name}».`;
       const existentes = [];
       for (let k = 1; k <= n; k++) {
         try { await carpeta.getFileHandle(nombreNumerado(base, k, n)); existentes.push(nombreNumerado(base, k, n)); } catch { /* no existe */ }
       }
-      if (existentes.length && !confirm(`La carpeta «${carpeta.name}» ya tiene ${existentes.length} archivo(s) con ese nombre (p. ej. ${existentes[0]}). ¿Reemplazarlos?`)) return;
+      if (existentes.length && !confirm(`La carpeta «${carpeta.name}» ya tiene ${existentes.length} archivo(s) con ese nombre (p. ej. ${existentes[0]}). ¿Reemplazarlos?`)) {
+        info.textContent = 'No se guardó ningún archivo (no se reemplazaron los existentes). Cambie el nombre base o la carpeta.';
+        return;
+      }
     }
     for (let k = 1; k <= n; k++) {
       info.textContent = `Guardando ${k} de ${n}…`;
@@ -2074,9 +2095,9 @@ async function guardarMoldenNumerados() {
     }
     info.textContent = `✓ ${n} archivos guardados ${carpeta ? `en la carpeta «${carpeta.name}»` : 'en la carpeta de descargas'}: ${nombreNumerado(base, 1, n)} … ${nombreNumerado(base, n, n)}.`;
   } catch (e) {
-    info.textContent = `No se pudieron guardar los archivos: ${e.message}`;
+    info.textContent = `No se pudieron guardar los archivos (${e.name}): ${e.message}. Pruebe con otra carpeta o use «Descargar sin elegir carpeta».`;
   } finally {
-    boton.disabled = false;
+    botones.forEach((b) => { b.disabled = false; });
   }
 }
 
@@ -2165,6 +2186,7 @@ function eventos() {
   $('#dlgMoldenBase').addEventListener('input', vistaMolden);
   $('#dlgMoldenForm').addEventListener('submit', (e) => { e.preventDefault(); guardarMoldenNumerados(); });
   $('#dlgMoldenCerrar').addEventListener('click', () => $('#dlgMolden').close());
+  $('#dlgMoldenDescargar').addEventListener('click', () => guardarMoldenNumerados({ sinCarpeta: true }));
   $('#abrirArchivo').addEventListener('click', () => $('#archivoEntrada').click());
   $('#archivoEntrada').addEventListener('change', (e) => abrirArchivo(e.target.files[0]));
   const tarjeta = $('#tarjetaMolecula');
