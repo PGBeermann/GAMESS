@@ -72,8 +72,10 @@ el potencial electrostático y las vibraciones.
      con un .xyz de varios cuadros y `LEAME.txt`. Al terminar un IRC o un scan que se estaba
      siguiendo, la página pide un **nombre base** y una **carpeta** (File System Access API:
      Chrome/Edge) y escribe `base_001.molden`, `base_002.molden`…; si la carpeta ya tiene esos
-     nombres, pide confirmación. En navegadores sin esa API se descargan con esos nombres en la
-     carpeta de descargas. El botón «Guardar … .molden numerados…» repite el proceso. En IboView se
+     nombres, pide confirmación. Chrome no deja usar directamente Escritorio, Documentos,
+     Descargas ni la carpeta personal (hay que elegir una subcarpeta). «Descargar .zip numerado»
+     (y los navegadores sin esa API) baja un solo `base.zip` con los mismos nombres a la carpeta
+     de descargas. El botón «Guardar … .molden numerados…» repite el proceso. En IboView se
      abren todos a la vez como cuadros de una trayectoria para seguir el flujo de electrones. Los
      coeficientes cumplen CᵀSC = I con la convención estándar de Molden (comprobado en bases
      cartesianas y esféricas).

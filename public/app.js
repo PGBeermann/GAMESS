@@ -2027,7 +2027,7 @@ function abrirDialogoMolden({ alTerminar = false } = {}) {
   $('#dlgMoldenTexto').textContent = `${alTerminar ? `Terminó el ${irc ? 'IRC' : 'scan'} «${t.titulo}». ` : ''}Hay ${n} archivos .molden, uno por punto ${irc ? 'del IRC (reactivo → TS → producto)' : 'del scan, en su orden'}. Escriba el nombre base y elija la carpeta donde guardarlos con numeración secuencial.`;
   $('#dlgMoldenBase').value = `${nombreSeguro(t.titulo)}_${irc ? 'irc' : 'scan'}`;
   const conCarpeta = typeof window.showDirectoryPicker === 'function';
-  $('#dlgMoldenGuardar').textContent = conCarpeta ? 'Elegir carpeta y guardar' : `Descargar los ${n} archivos`;
+  $('#dlgMoldenGuardar').textContent = conCarpeta ? 'Elegir carpeta y guardar' : `Descargar .zip numerado (${n} archivos)`;
   $('#dlgMoldenNota').hidden = conCarpeta;
   $('#dlgMoldenEstado').textContent = '';
   $('#dlgMoldenGuardar').disabled = false;
@@ -2038,7 +2038,55 @@ function abrirDialogoMolden({ alTerminar = false } = {}) {
   if (!dlg.open) dlg.showModal();
   $('#dlgMoldenBase').select();
 }
-// sinCarpeta: descarga los archivos numerados en la carpeta de descargas (sin elegir carpeta)
+// .zip sin compresión (método «store»), con nombres UTF-8: basta para unos cuantos .molden de texto
+const TABLA_CRC = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+function crc32(bytes) {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = TABLA_CRC[(c ^ bytes[i]) & 0xFF] ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+function crearZip(archivos, fecha = new Date()) {
+  const cod = new TextEncoder();
+  const hora = (fecha.getHours() << 11) | (fecha.getMinutes() << 5) | (fecha.getSeconds() >> 1);
+  const dia = ((fecha.getFullYear() - 1980) << 9) | ((fecha.getMonth() + 1) << 5) | fecha.getDate();
+  const locales = []; const central = []; let pos = 0;
+  for (const a of archivos) {
+    const nombre = cod.encode(a.nombre); const datos = cod.encode(a.texto); const crc = crc32(datos);
+    const l = new DataView(new ArrayBuffer(30));
+    l.setUint32(0, 0x04034b50, true); l.setUint16(4, 20, true); l.setUint16(6, 0x0800, true); l.setUint16(8, 0, true);
+    l.setUint16(10, hora, true); l.setUint16(12, dia, true); l.setUint32(14, crc, true);
+    l.setUint32(18, datos.length, true); l.setUint32(22, datos.length, true); l.setUint16(26, nombre.length, true); l.setUint16(28, 0, true);
+    locales.push(l, nombre, datos);
+    const c = new DataView(new ArrayBuffer(46));
+    c.setUint32(0, 0x02014b50, true); c.setUint16(4, 20, true); c.setUint16(6, 20, true); c.setUint16(8, 0x0800, true); c.setUint16(10, 0, true);
+    c.setUint16(12, hora, true); c.setUint16(14, dia, true); c.setUint32(16, crc, true);
+    c.setUint32(20, datos.length, true); c.setUint32(24, datos.length, true); c.setUint16(28, nombre.length, true);
+    c.setUint32(42, pos, true); // el resto (extra, comentario, atributos) queda en 0
+    central.push(c, nombre);
+    pos += 30 + nombre.length + datos.length;
+  }
+  const tam = central.reduce((s, p) => s + p.byteLength, 0);
+  const fin = new DataView(new ArrayBuffer(22));
+  fin.setUint32(0, 0x06054b50, true); fin.setUint16(8, archivos.length, true); fin.setUint16(10, archivos.length, true);
+  fin.setUint32(12, tam, true); fin.setUint32(16, pos, true);
+  return new Blob([...locales, ...central, fin], { type: 'application/zip' });
+}
+function descargarBlob(blob, nombre) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: nombre });
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 4000);
+}
+
+// sinCarpeta: descarga un .zip con los archivos numerados (sin elegir carpeta)
 async function guardarMoldenNumerados({ sinCarpeta = false } = {}) {
   const t = estado.infoTrabajo; const nombres = estado.resultado?.iboview?.puntos_molden || [];
   const n = nombres.length;
@@ -2057,16 +2105,16 @@ async function guardarMoldenNumerados({ sinCarpeta = false } = {}) {
         if (e.name !== 'AbortError') throw e;
         // Chrome da AbortError tanto si se cancela como si rechaza la carpeta elegida
         info.textContent = 'No se guardó ningún archivo: no se eligió una carpeta o Chrome no permitió usarla. '
-          + 'Chrome no deja guardar directamente en Escritorio, Documentos, Descargas ni en la carpeta personal: '
+          + 'Chrome no deja guardar directamente en Escritorio, Documentos, Descargas ni en la carpeta personal (avisa «No se puede abrir esta carpeta»): '
           + 'dentro del selector, cree (o elija) una subcarpeta, p. ej. Documentos\\Molden, entre en ella y pulse «Seleccionar carpeta». '
-          + 'Si Chrome pregunta si el sitio puede editar archivos, responda que sí. '
-          + 'También puede usar «Descargar sin elegir carpeta».';
+          + 'Si Chrome pregunta si el sitio puede ver o editar archivos, responda que sí. '
+          + 'O use «Descargar .zip numerado».';
         return;
       }
       // Permiso de escritura (Chrome lo pide al elegir la carpeta; si no se concedió, se pide de nuevo)
       if (carpeta.queryPermission && (await carpeta.queryPermission({ mode: 'readwrite' })) !== 'granted'
           && (await carpeta.requestPermission({ mode: 'readwrite' })) !== 'granted') {
-        info.textContent = `No se guardó ningún archivo: Chrome no dio permiso para escribir en «${carpeta.name}». Vuelva a intentarlo y acepte «Editar archivos», o use «Descargar sin elegir carpeta».`;
+        info.textContent = `No se guardó ningún archivo: Chrome no dio permiso para escribir en «${carpeta.name}». Vuelva a intentarlo y acepte «Editar archivos», o use «Descargar .zip numerado».`;
         return;
       }
       info.textContent = `Carpeta elegida: «${carpeta.name}».`;
@@ -2079,8 +2127,9 @@ async function guardarMoldenNumerados({ sinCarpeta = false } = {}) {
         return;
       }
     }
+    const archivos = [];
     for (let k = 1; k <= n; k++) {
-      info.textContent = `Guardando ${k} de ${n}…`;
+      info.textContent = `${carpeta ? 'Guardando' : 'Preparando'} ${k} de ${n}…`;
       const texto = await api(`/api/calculos/${t.id}/archivo/${nombres[k - 1]}`);
       const nombre = nombreNumerado(base, k, n);
       if (carpeta) {
@@ -2089,13 +2138,20 @@ async function guardarMoldenNumerados({ sinCarpeta = false } = {}) {
         await w.write(texto);
         await w.close();
       } else {
-        descargar(texto, nombre);
-        await new Promise((ok) => { setTimeout(ok, 300); });
+        archivos.push({ nombre, texto });
       }
     }
-    info.textContent = `✓ ${n} archivos guardados ${carpeta ? `en la carpeta «${carpeta.name}»` : 'en la carpeta de descargas'}: ${nombreNumerado(base, 1, n)} … ${nombreNumerado(base, n, n)}.`;
+    const rango = `${nombreNumerado(base, 1, n)} … ${nombreNumerado(base, n, n)}`;
+    if (carpeta) {
+      info.textContent = `✓ ${n} archivos guardados en la carpeta «${carpeta.name}»: ${rango}.`;
+    } else {
+      // Un solo .zip: el navegador no bloquea una descarga única (sí las descargas múltiples seguidas)
+      descargarBlob(crearZip(archivos), `${base}.zip`);
+      info.textContent = `✓ Se descargó ${base}.zip con los ${n} archivos (${rango}). Está en la carpeta de descargas del navegador `
+        + '(normalmente «Descargas»; en Chrome, Ctrl+J muestra la lista y «Mostrar en carpeta» la abre). Descomprímalo en la carpeta que quiera.';
+    }
   } catch (e) {
-    info.textContent = `No se pudieron guardar los archivos (${e.name}): ${e.message}. Pruebe con otra carpeta o use «Descargar sin elegir carpeta».`;
+    info.textContent = `No se pudieron guardar los archivos (${e.name}): ${e.message}. Pruebe con otra carpeta o use «Descargar .zip numerado».`;
   } finally {
     botones.forEach((b) => { b.disabled = false; });
   }
