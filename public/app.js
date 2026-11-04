@@ -84,7 +84,15 @@ async function cargarOpciones() {
     estado.opciones = o;
     sel('#metodo', o.metodos, 'b3lyp');
     sel('#base', o.bases, '6-31g*');
-    sel('#tarea', o.tareas.filter((t) => t.id !== 'scan' && t.id !== 'congelar'), 'optimizacion'); // el scan y la coordenada congelada se eligen con sus casillas
+    sel('#tarea', o.tareas.filter((t) => t.id !== 'scan' && t.id !== 'congelar'), 'optimizacion');
+    // Solventes de PCMSolver (por ε decreciente); «Sin solvente» = fase gaseosa
+    $('#solvente').innerHTML = '<option value="ninguno">Sin solvente (fase gaseosa)</option>'
+      + (o.solventes || []).map((x) => `<option value="${esc(x.id)}">${esc(x.nombre)} — ε = ${x.epsilon}</option>`).join('');
+    $('#modeloPcm').innerHTML = (o.modelos_pcm || []).map((m) => `<option value="${esc(m.id)}">${esc(m.nombre)}</option>`).join('');
+    if (o.pcm === false) {
+      $('#solvente').disabled = true;
+      $('#solvente').title = 'PCMSolver no está instalado en el servidor: sólo cálculos en fase gaseosa';
+    } // el scan y la coordenada congelada se eligen con sus casillas
     const es = $('#estadoServidor');
     es.textContent = o.psi4 ? `Psi4 ${o.psi4} · ${o.hilos} hilos` : 'Servidor activo (Psi4 cargando…)';
     es.className = 'estado-servidor ok';
@@ -119,10 +127,14 @@ function actualizarEstimacion() {
     congelar: 10,
   }[tarea] || 1;
   actualizarInfoScan();
+  actualizarSolventeUI();
   if (!pesados) { $('#estimacion').textContent = ''; return; }
-  const seg = 0.04 * Math.pow(Math.max(pesados, 1), 3) * fb * fm * ft; // segundos aproximados con 4 hilos
+  // PCM: gradientes por diferencias finitas (≈ 2·3N energías por paso) y hessianos aún más caros
+  const nn = n || 1;
+  const fpcm = !solventeForm() ? 1 : tarea === 'energia' ? 1.5 : ['frecuencias', 'ts', 'irc'].includes(tarea) ? 3 * nn + nn * nn : 3 * nn;
+  const seg = 0.04 * Math.pow(Math.max(pesados, 1), 3) * fb * fm * ft * fpcm; // segundos aproximados con 4 hilos
   const nivel = seg < 40 ? 'rápido (segundos)' : seg < 240 ? 'moderado (1–4 min)' : seg < 1200 ? 'lento (4–20 min)' : 'muy lento: considere una base más pequeña o «Energía»';
-  $('#estimacion').textContent = `${n} átomos (${pesados} pesados) · tiempo estimado: ${nivel}`;
+  $('#estimacion').textContent = `${n} átomos (${pesados} pesados) · tiempo estimado: ${nivel}${solventeForm() ? ' (con PCM)' : ''}`;
 }
 
 // ---------- JSME ----------
@@ -530,6 +542,7 @@ function lineaDelError(mensaje) {
 function formularioDistinto(d) {
   return $('#metodo').value !== d.metodo || $('#base').value !== d.base || tareaEfectiva() !== d.tarea
     || parseInt($('#carga').value, 10) !== d.carga || parseInt($('#multiplicidad').value, 10) !== d.multiplicidad
+    || firmaPCM(solventeForm()) !== firmaPCM(d.pcm)
     || estado.modificada || !estado.geom || estado.geom.claveEntrada !== editor.clave;
 }
 
@@ -544,7 +557,7 @@ function validarEditor() {
     else if (formularioDistinto(d)) pendiente = ' · <span class="pend">el formulario o el dibujo cambiaron; al ejecutar se usará este código</span>';
     if (estado.errorFormulario && textoEditor() === editor.aplicado) pendiente += ` · <span class="pend">formulario incompleto: ${esc(estado.errorFormulario)}</span>`;
     const origen = editor.trabajo ? `<span class="pend">Código del cálculo «${esc(editor.trabajo.titulo || '')}»</span> · ` : '';
-    caja.innerHTML = `${origen}<span class="ok">✓ Código válido</span> · ${natomos} átomos · carga ${d.carga} · multiplicidad ${d.multiplicidad} · ${esc(nombreDe('metodos', d.metodo))}/${esc(nombreDe('bases', d.base))} · ${esc(nombreDe('tareas', d.tarea))}${pendiente}`;
+    caja.innerHTML = `${origen}<span class="ok">✓ Código válido</span> · ${natomos} átomos · carga ${d.carga} · multiplicidad ${d.multiplicidad} · ${esc(nombreDe('metodos', d.metodo))}/${esc(nombreDe('bases', d.base))} · ${esc(nombreDe('tareas', d.tarea))} · ${d.pcm ? `en ${esc(buscarSolvente(d.pcm.solvente)?.nombre || d.pcm.solvente)} (${esc(d.pcm.modelo)})` : 'fase gaseosa'}${pendiente}`;
     return d;
   } catch (e) {
     const linea = lineaDelError(e.message);
@@ -637,6 +650,9 @@ function ponerFormulario(datos, tituloPorDefecto = '') {
   }
   mostrarOpcionesIRC();
   if (datos.mep) $('#mep').checked = true;
+  $('#solvente').value = datos.pcm?.solvente || 'ninguno';
+  if (datos.pcm) $('#modeloPcm').value = datos.pcm.modelo;
+  actualizarSolventeUI();
 }
 
 async function abrirArchivo(archivo) {
@@ -653,7 +669,7 @@ async function abrirArchivo(archivo) {
       texto = generarEntradaPsi4({
         titulo: x.titulo || archivo.name.replace(/\.[^.]+$/, ''), xyz: x.xyz, carga: 0, multiplicidad: 1,
         metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: tareaEfectiva() || 'energia',
-        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true),
+        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true), pcm: solventeForm(),
       });
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
     }
@@ -823,6 +839,28 @@ function actualizarScanUI() {
 }
 const actualizarInfoScan = actualizarScanUI;
 
+// ---------- Solvente (PCM) en el formulario ----------
+// null = fase gaseosa; si no, { solvente: id, modelo: 'IEFPCM' | 'CPCM' }
+function solventeForm() {
+  const v = $('#solvente').value;
+  return !v || v === 'ninguno' ? null : { solvente: v, modelo: $('#modeloPcm').value || 'IEFPCM' };
+}
+const firmaPCM = (p) => (p ? `${p.solvente}|${p.modelo}` : '');
+
+function actualizarSolventeUI() {
+  const p = solventeForm();
+  $$('.solo-pcm').forEach((el) => { el.hidden = !p; });
+  if (!p) return;
+  const tarea = tareaEfectiva();
+  const s = (estado.opciones?.solventes || []).find((x) => x.id === p.solvente);
+  const avisos = [];
+  if ($('#metodo').value === 'mp2') avisos.push('⚠ PCM en Psi4 sólo funciona con HF o DFT, no con MP2: cambie el método o elija «Sin solvente».');
+  avisos.push(`${s ? `${s.nombre} (ε = ${s.epsilon})` : 'Solvente'}: modelo continuo polarizable; la cavidad es GePol con radios UFF. Al final se calcula también la energía en fase gaseosa en la misma geometría para dar la energía de solvatación.`);
+  if (['frecuencias', 'ts', 'irc'].includes(tarea)) avisos.push('Psi4 no tiene gradientes ni hessianos analíticos con PCM: el hessiano se obtiene por diferencias finitas de energías, lo que es MUY lento salvo en moléculas pequeñas.');
+  else if (tarea !== 'energia') avisos.push('Psi4 no tiene gradientes analíticos con PCM: cada paso de la optimización usa diferencias finitas de energías (bastante más lento que en fase gaseosa).');
+  $('#notaPcm').textContent = avisos.join(' ');
+}
+
 // ---------- Opciones del IRC en el formulario ----------
 function opcionesIRCForm() {
   const puntos = Math.min(60, Math.max(3, parseInt($('#ircPuntos').value, 10) || 20));
@@ -850,6 +888,7 @@ function codigoDesdeFormulario() {
     metodo: $('#metodo').value, base: $('#base').value, tarea,
     memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
     scan: tarea === 'scan' || tarea === 'congelar' ? opcionesScanForm() : null,
+    pcm: solventeForm(),
   });
   return { texto, nombre: `${nombreSeguro(titulo)}.in` };
 }
@@ -1013,6 +1052,8 @@ async function lanzarCalculo() {
     mep: $('#mep').checked,
     irc: tareaEfectiva() === 'irc' ? opcionesIRCForm() : undefined,
     scan: ['scan', 'congelar'].includes(tareaEfectiva()) ? opcionesScanForm() : undefined,
+    solvente: solventeForm()?.solvente || 'ninguno',
+    modelo_pcm: solventeForm()?.modelo,
   };
   const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
   // En un IRC los enlaces cambian a lo largo del camino: no se fijan los del dibujo
@@ -1312,7 +1353,17 @@ function panelResumen(t, r) {
     ${r.iboview?.puntos_molden?.length ? `<button class="btn chico" type="button" data-guardar="molden-puntos" title="Un .molden por punto, con un nombre base y numeración en la carpeta que elija">Guardar ${r.iboview.puntos_molden.length} .molden numerados…</button>` : ''}
     ${r.tarea === 'ts' && f?.n_imaginarias === 1 ? '<button class="btn chico" type="button" id="lanzarIRC" title="Sigue el camino de mínima energía desde este TS hacia reactivos y productos">Calcular IRC desde este TS</button>' : ''}
   </div><div class="cifras">`;
-  html += cifra({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: 'Energía (coordenada congelada)' }[r.tarea] || 'Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  const sv = r.solvatacion;
+  html += cifra(({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: 'Energía (coordenada congelada)' }[r.tarea] || 'Energía total') + (sv ? ' en solución' : ''), `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  if (sv) {
+    html += cifra('Solvente (PCM)', esc(sv.nombre), `ε = ${sv.epsilon ?? '?'} · ${esc(sv.modelo)} · ${esc(sv.cavidad || '')}`);
+    if (sv.solvatacion_kcal != null) {
+      html += cifra('Energía de solvatación', `${fx(sv.solvatacion_kcal, 2)} kcal/mol`,
+        `E(PCM) − E(gas) en la misma geometría (sólo la parte electrostática)${sv.energia_gas_hartree != null ? ` · E(gas) = ${fx(sv.energia_gas_hartree, 8)} E<sub>h</sub>` : ''}`);
+    } else if (sv.aviso) html += cifra('Energía de solvatación', '—', esc(sv.aviso));
+  } else {
+    html += cifra('Medio', 'Fase gaseosa', 'Sin solvente (sin PCM)');
+  }
   const cg = r.congelado;
   if (cg) {
     const dec = cg.unidad === 'Å' ? 3 : 1;
@@ -1352,7 +1403,7 @@ function panelResumen(t, r) {
   const comp = e.componentes || {};
   if (Object.keys(comp).length) {
     html += '<table><thead><tr><th>Componente de energía</th><th class="num">E<sub>h</sub></th></tr></thead><tbody>';
-    const nombres = { repulsion_nuclear: 'Repulsión nuclear', scf_total: 'Energía SCF total', correlacion_mp2: 'Correlación MP2' };
+    const nombres = { repulsion_nuclear: 'Repulsión nuclear', scf_total: 'Energía SCF total', correlacion_mp2: 'Correlación MP2', polarizacion_pcm: 'Polarización PCM (solvente)' };
     for (const [k, v] of Object.entries(comp)) html += `<tr><td>${nombres[k] || esc(k)}</td><td class="num">${fx(v, 8)}</td></tr>`;
     html += '</tbody></table>';
   }
@@ -1714,6 +1765,7 @@ async function calcularFrecuencias(boton) {
         titulo: `${t.titulo} (frecuencias)`.slice(0, 80),
         metodo: r.metodo, base: r.base, tarea: 'frecuencias',
         carga: r.carga, multiplicidad: r.multiplicidad, mep: (r.cubos || []).includes('mep'),
+        solvente: r.solvatacion?.solvente || 'ninguno', modelo_pcm: r.solvatacion?.modelo, // mismo solvente que el cálculo original
       }),
     });
     guardarEnHistorial(nuevo);
@@ -1978,6 +2030,7 @@ async function calcularIRC(boton) {
         titulo: `${t.titulo} (IRC)`.slice(0, 80),
         metodo: r.metodo, base: r.base, tarea: 'irc', irc: opcionesIRCForm(),
         carga: r.carga, multiplicidad: r.multiplicidad, mep: false,
+        solvente: r.solvatacion?.solvente || 'ninguno', modelo_pcm: r.solvatacion?.modelo, // mismo solvente que el TS
       }),
     });
     guardarEnHistorial(nuevo);
@@ -2182,7 +2235,7 @@ function panelArchivos(t, r) {
 function historial() { return leerLS(LS_HIST, []); }
 function guardarEnHistorial(t) {
   const h = historial().filter((x) => x.id !== t.id);
-  h.unshift({ id: t.id, titulo: t.titulo, formula: t.formula, metodo: t.metodo, base: t.base, tarea: t.tarea, estado: t.estado, creado: t.creado });
+  h.unshift({ id: t.id, titulo: t.titulo, formula: t.formula, metodo: t.metodo, base: t.base, tarea: t.tarea, solvente: t.solvente || null, estado: t.estado, creado: t.creado });
   escribirLS(LS_HIST, h.slice(0, 40));
   pintarHistorial();
 }
@@ -2199,7 +2252,7 @@ function pintarHistorial() {
   const txt = { en_cola: 'en cola', ejecutando: 'calculando', terminado: 'terminado', error: 'error' };
   ul.innerHTML = h.map((x) => `<li data-id="${esc(x.id)}" tabindex="0">
       <span class="h-titulo">${esc(x.titulo)}</span>
-      <span class="h-detalle">${esc(x.formula || '')} · ${esc(nombreDe('metodos', x.metodo))}/${esc(nombreDe('bases', x.base))} · ${esc(nombreDe('tareas', x.tarea))} · ${new Date(x.creado).toLocaleString()}</span>
+      <span class="h-detalle">${esc(x.formula || '')} · ${esc(nombreDe('metodos', x.metodo))}/${esc(nombreDe('bases', x.base))} · ${esc(nombreDe('tareas', x.tarea))}${x.solvente ? ` · en ${esc(x.solvente)}` : ''} · ${new Date(x.creado).toLocaleString()}</span>
       <span class="pildora ${x.estado === 'error' ? 'error' : x.estado === 'en_cola' ? 'cola' : ''}">${txt[x.estado] || esc(x.estado)}</span></li>`).join('');
 }
 
@@ -2253,7 +2306,7 @@ function eventos() {
     tarjeta.classList.remove('arrastrando');
     if (e.dataTransfer.files.length) abrirArchivo(e.dataTransfer.files[0]);
   });
-  ['#metodo', '#base', '#tarea', '#ircDireccion', '#ircPuntos'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
+  ['#metodo', '#base', '#tarea', '#ircDireccion', '#ircPuntos', '#solvente', '#modeloPcm'].forEach((s) => $(s).addEventListener('change', actualizarEstimacion));
   $('#tarea').addEventListener('change', mostrarOpcionesIRC);
   ['#scanI', '#scanJ', '#scanK', '#scanL', '#scanDesde', '#scanHasta', '#scanPaso'].forEach((s) => $(s).addEventListener('input', actualizarEstimacion));
 

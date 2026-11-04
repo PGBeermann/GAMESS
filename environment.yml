@@ -5,6 +5,7 @@ channels:
 dependencies:
   - python=3.12
   - psi4=1.11
+  - pcmsolver        # solvatación PCM (Psi4 de conda-forge viene compilado con PCMSolver)
   - rdkit
   - numpy
   - nodejs=22

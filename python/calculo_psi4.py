@@ -5,7 +5,8 @@ Uso:  python calculo_psi4.py <carpeta_del_trabajo>
 La carpeta debe contener `entrada.json` (lo escribe servidor.js):
     {"xyz": "C 0 0 0\\nH ...", "carga": 0, "multiplicidad": 1,
      "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts|irc|scan|congelar",
-     "mep": true, "hilos": 2, "memoria": "2 GB", "titulo": "etanol"}
+     "mep": true, "hilos": 2, "memoria": "2 GB", "titulo": "etanol",
+     "pcm": {"solvente": "Water", "modelo": "IEFPCM"}}      (pcm: null o ausente = fase gaseosa)
 
 Archivos que produce en la carpeta:
     salida.dat        salida completa de Psi4 (texto)
@@ -37,6 +38,36 @@ METODOS = {"hf", "b3lyp", "pbe0", "wb97x-d", "m06-2x", "mp2"}
 BASES = {"sto-3g", "3-21g", "6-31g", "6-31g*", "6-31g**", "6-31+g*", "6-311g**",
          "cc-pvdz", "aug-cc-pvdz", "def2-svp", "def2-tzvp"}
 TAREAS = {"energia", "optimizacion", "frecuencias", "ts", "irc", "scan", "congelar"}
+
+# Solventes predefinidos de PCMSolver (nombre en su entrada) y modelos de solvatación
+SOLVENTES_PCM = {"Water", "Propylene Carbonate", "Dimethylsulfoxide", "Nitromethane", "Acetonitrile",
+                 "Methanol", "Ethanol", "Acetone", "1,2-Dichloroethane", "Methylenechloride",
+                 "Tetrahydrofurane", "Aniline", "Chlorobenzene", "Chloroform", "Toluene", "1,4-Dioxane",
+                 "Benzene", "Carbon Tetrachloride", "Cyclohexane", "N-heptane"}
+MODELOS_PCM = {"IEFPCM", "CPCM"}
+
+
+def bloque_pcm(solvente, modelo):
+    """Sección pcm = {…} de PCMSolver: cavidad GePol con radios UFF (como en los ejemplos de Psi4)."""
+    return f"""Units = Angstrom
+Medium {{
+SolverType = {modelo}
+Solvent = {solvente}
+}}
+Cavity {{
+RadiiSet = UFF
+Type = GePol
+Scaling = False
+Area = 0.3
+Mode = Implicit
+}}
+"""
+
+
+def activar_pcm(pcm):
+    """Activa la solvatación PCM (PCMSolver) para todos los cálculos SCF que siguen."""
+    psi4.pcm_helper(bloque_pcm(pcm["solvente"], pcm["modelo"]))
+    psi4.set_options({"pcm": True, "pcm_scf_type": "total"})
 
 
 def etapa(texto):
@@ -806,6 +837,13 @@ def main():
             resultado["aviso"] = "Un solo átomo: se calcula sólo la energía."
             tarea = "energia"
 
+        pcm = entrada.get("pcm") or None
+        if pcm:
+            if pcm.get("solvente") not in SOLVENTES_PCM or pcm.get("modelo") not in MODELOS_PCM:
+                raise ValueError("Solvente o modelo PCM no permitido.")
+            if metodo == "mp2":
+                raise ValueError("PCM en Psi4 sólo funciona con funciones de onda SCF (HF o DFT), no con MP2.")
+
         abierta = mult != 1
         psi4.set_options({
             "basis": base,
@@ -814,6 +852,9 @@ def main():
             "maxiter": 200,
             "geom_maxiter": 100,
         })
+        if pcm:
+            etapa(f"Solvatación PCM: {pcm.get('nombre') or pcm['solvente']} ({pcm['modelo']})")
+            activar_pcm(pcm)
 
         wfn_freq = None
         if tarea == "energia":
@@ -879,11 +920,39 @@ def main():
         componentes = {}
         for nombre, clave in (("repulsion_nuclear", "NUCLEAR REPULSION ENERGY"),
                               ("scf_total", "SCF TOTAL ENERGY"),
-                              ("correlacion_mp2", "MP2 CORRELATION ENERGY")):
+                              ("correlacion_mp2", "MP2 CORRELATION ENERGY"),
+                              ("polarizacion_pcm", "PCM POLARIZATION ENERGY")):
             v = variable_global(clave)
             if v is not None:
                 componentes[nombre] = v
         resultado["energia"]["componentes"] = componentes
+        if pcm:
+            # Misma geometría, sin solvente: la diferencia es la energía de solvatación electrostática
+            etapa("Energía en fase gaseosa en la misma geometría (para la energía de solvatación)")
+            sol = {"solvente": pcm["solvente"], "nombre": pcm.get("nombre") or pcm["solvente"],
+                   "modelo": pcm["modelo"], "epsilon": pcm.get("epsilon"),
+                   "cavidad": "GePol, radios UFF, área 0.3 Å²",
+                   "polarizacion_hartree": componentes.get("polarizacion_pcm")}
+            try:
+                psi4.set_options({"pcm": False})
+                e_gas = float(psi4.energy(metodo, molecule=mol))
+                sol["energia_gas_hartree"] = e_gas
+                sol["solvatacion_kcal"] = (float(energia) - e_gas) * HARTREE_KCAL
+            except Exception as e:  # noqa: BLE001
+                sol["aviso"] = f"No se pudo calcular la energía en fase gaseosa: {mensaje_error(e)}"
+            finally:
+                psi4.set_options({"pcm": True})
+            resultado["solvatacion"] = sol
+            psi4.core.print_out(
+                f"\n\n===== SOLVATACIÓN PCM ({sol['modelo']}, {sol['nombre']}"
+                + (f", ε = {sol['epsilon']}" if sol.get("epsilon") else "") + ") =====\n"
+                + f"E(PCM)  = {float(energia):.10f} Eh\n"
+                + (f"E(gas)  = {sol['energia_gas_hartree']:.10f} Eh   (misma geometría)\n"
+                   f"ΔE(solvatación, electrostática) = {sol['solvatacion_kcal']:.3f} kcal/mol\n"
+                   if "solvatacion_kcal" in sol else "")
+                + (f"Energía de polarización PCM = {sol['polarizacion_hartree']:.10f} Eh\n"
+                   if sol.get("polarizacion_hartree") is not None else "")
+                + "=" * 60 + "\n")
 
         etapa("Analizando orbitales, dipolo y cargas")
         scf = funcion_scf(wfn)

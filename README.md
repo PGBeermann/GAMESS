@@ -63,6 +63,19 @@ el potencial electrostático y las vibraciones.
      hay optimización previa sin restricciones. El .out termina con «OPTIMIZACIÓN CON …
      CONGELADA». Se lee de un .in con `frozen_*`/`fixed_*` y sin bucle (valor de `colocar(…)`, de
      `fixed_*` o el de la geometría).
+   - **Solvente (PCM, PCMSolver)**: «Sin solvente (fase gaseosa)» por defecto, o uno de los 20
+     solventes predefinidos de PCMSolver (agua, carbonato de propileno, DMSO, nitrometano,
+     acetonitrilo, metanol, etanol, acetona, 1,2-dicloroetano, diclorometano, THF, anilina,
+     clorobenceno, cloroformo, tolueno, 1,4-dioxano, benceno, CCl₄, ciclohexano, n-heptano) con
+     IEFPCM o CPCM; cavidad GePol con radios UFF (área 0.3 Å²), como en los ejemplos de Psi4. Al
+     final se repite la energía sin solvente en la misma geometría: el resumen y el .out dan la
+     **energía de solvatación** E(PCM) − E(gas) (electrostática) y la energía de polarización.
+     Limitaciones de Psi4: PCM sólo con HF o DFT (no MP2), y **sin gradientes ni hessianos
+     analíticos**: optimizaciones, scans, TS, IRC y frecuencias usan diferencias finitas de
+     energías (mucho más lentas; la estimación de tiempo lo tiene en cuenta). En un .in:
+     `set pcm true` y un bloque `pcm = { Medium { SolverType = … Solvent = … } Cavity { … } }`.
+     El módulo de Python `pcmsolver` (conda-forge) se instala con el entorno; la construcción de
+     Docker falla si PCMSolver no queda activo en Psi4, y `/salud` informa `pcm`.
    - **Función de onda en formato Molden, siempre**: cada cálculo escribe `orbitales.molden`
      (SCF/KS, con `psi4.molden`) y el resumen tiene «Descargar .molden». IboView construye con
      ella los orbitales intrínsecos de enlace (IBO). Con MP2 de capa cerrada, además

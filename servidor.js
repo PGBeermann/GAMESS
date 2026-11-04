@@ -69,6 +69,24 @@ const TAREAS = [
   { id: 'congelar', nombre: 'Optimización con una coordenada congelada' },
 ];
 
+// Solventes predefinidos de PCMSolver: la tabla está en public/entrada.js (la usan también la página y el lector de .in)
+const { SOLVENTES } = require('./public/entrada.js');
+const MODELOS_PCM = [
+  { id: 'IEFPCM', nombre: 'IEFPCM (formalismo de ecuación integral)' },
+  { id: 'CPCM', nombre: 'CPCM (conductor)' },
+];
+// Solvente del formulario (id o nombre de PCMSolver); null = fase gaseosa
+function opcionesPCM(b, metodo) {
+  const id = b.solvente;
+  if (!id || id === 'ninguno') return null;
+  const s = SOLVENTES.find((x) => x.id === id || x.pcm.toLowerCase() === String(id).toLowerCase() || x.alias.toLowerCase() === String(id).toLowerCase());
+  if (!s) throw new Error('Solvente no disponible en PCMSolver.');
+  if (pcmDisponible === false) throw new Error('PCMSolver no está instalado en este servidor: sólo se pueden hacer cálculos en fase gaseosa.');
+  if (metodo === 'mp2') throw new Error('PCM en Psi4 sólo funciona con HF o DFT (no con MP2). Elija otro método o «Sin solvente».');
+  const modelo = MODELOS_PCM.some((m) => m.id === b.modelo_pcm) ? b.modelo_pcm : 'IEFPCM';
+  return { id: s.id, solvente: s.pcm, nombre: s.nombre, epsilon: s.epsilon, modelo };
+}
+
 // Opciones del scan relajado: tipo, 2/3/4 átomos (desde 1) y hasta 40 valores dentro de un rango razonable
 const SCAN = {
   distancia: { natom: 2, min: 0.5, max: 6, nombre: 'distancias', unidad: 'Å' },
@@ -113,6 +131,7 @@ const trabajos = new Map();
 const cola = [];
 let enEjecucion = 0;
 let versionPsi4 = null;
+let pcmDisponible = null; // se sabe al arrancar (version.py)
 
 const ahora = () => new Date().toISOString();
 const carpetaDe = (id) => path.join(DIR_TRABAJOS, id);
@@ -288,7 +307,7 @@ function resumen(t) {
   return {
     id: t.id, estado: t.estado, etapa: t.etapa || null, posicion_cola: posicion,
     titulo: t.titulo, formula: t.formula, metodo: t.metodo, base: t.base, tarea: t.tarea,
-    carga: t.carga, multiplicidad: t.multiplicidad,
+    carga: t.carga, multiplicidad: t.multiplicidad, solvente: t.solvente || null,
     creado: t.creado, inicio: t.inicio || null, fin: t.fin || null, error: t.error || null,
   };
 }
@@ -321,7 +340,7 @@ app.use('/vendor/jsme', express.static(path.join(__dirname, 'node_modules', 'jsm
 app.use('/vendor/3dmol', express.static(path.join(__dirname, 'node_modules', '3dmol', 'build'), { maxAge: '7d' }));
 app.use(express.static(path.join(__dirname, 'public'), { maxAge: 0 }));
 
-app.get('/salud', (req, res) => res.json({ ok: true, psi4: versionPsi4, cola: cola.length, ejecutando: enEjecucion }));
+app.get('/salud', (req, res) => res.json({ ok: true, psi4: versionPsi4, pcm: pcmDisponible, cola: cola.length, ejecutando: enEjecucion }));
 
 app.get('/api/opciones', (req, res) => {
   res.json({
@@ -329,6 +348,8 @@ app.get('/api/opciones', (req, res) => {
     max_atomos: CONFIG.maxAtomos, minutos_max: CONFIG.minutosMax,
     hilos: CONFIG.hilos, memoria: CONFIG.memoria, simultaneos: CONFIG.simultaneos,
     requiere_clave: Boolean(CONFIG.clave), psi4: versionPsi4,
+    solventes: SOLVENTES.map(({ id, nombre, formula, epsilon, pcm }) => ({ id, nombre, formula, epsilon, pcm })),
+    modelos_pcm: MODELOS_PCM, pcm: pcmDisponible !== false,
   });
 });
 
@@ -397,21 +418,23 @@ app.post('/api/calculos', async (req, res) => {
     const id = crypto.randomUUID();
     const titulo = String(b.titulo || 'molécula').replace(/[^\p{L}\p{N} ()\-_,.+=#]/gu, '').slice(0, 80) || 'molécula';
     const irc = tarea.id === 'irc' ? opcionesIRC(b.irc) : undefined;
+    const pcm = opcionesPCM(b, metodo.id);
     const scan = ['scan', 'congelar'].includes(tarea.id) ? opcionesScan(b.scan, g.natomos, tarea.id === 'congelar') : undefined;
     const t = {
       id, estado: 'en_cola', creado: ahora(), ip,
       titulo, formula: String(b.formula || '').slice(0, 60), smiles: String(b.smiles || '').slice(0, 500),
       metodo: metodo.id, base: base.id, tarea: tarea.id, carga, multiplicidad: mult, natomos: g.natomos,
+      solvente: pcm ? `${pcm.nombre} (${pcm.modelo})` : null,
     };
     await fsp.mkdir(carpetaDe(id), { recursive: true });
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.json'), JSON.stringify({
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      mep: b.mep !== false, molden: true, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan,
+      mep: b.mep !== false, molden: true, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan, pcm,
     }));
     // Entrada .in equivalente, para descargarla y ejecutarla con Psi4 fuera del servidor
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), generarEntradaPsi4({
       titulo, xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      memoria: CONFIG.memoria, mep: b.mep !== false, molden: true, irc, scan,
+      memoria: CONFIG.memoria, mep: b.mep !== false, molden: true, irc, scan, pcm,
     }));
     trabajos.set(id, t);
     await guardarMeta(t);
@@ -486,7 +509,11 @@ async function iniciar() {
   setInterval(() => limpiarAntiguos().catch(() => {}), 3600e3).unref();
   limpiarAntiguos().catch(() => {});
   correrPython(path.join(__dirname, 'python', 'version.py'), {}, 120e3)
-    .then((r) => { versionPsi4 = r.psi4 || null; console.log(`Psi4 ${versionPsi4} / RDKit ${r.rdkit}`); })
+    .then((r) => {
+      versionPsi4 = r.psi4 || null;
+      pcmDisponible = Boolean(r.pcm);
+      console.log(`Psi4 ${versionPsi4} / RDKit ${r.rdkit} / PCMSolver ${pcmDisponible ? 'sí' : `no (${r.error_pcm || '?'})`}`);
+    })
     .catch((e) => console.warn('Aviso: no se pudo importar Psi4/RDKit:', e.message));
   app.listen(CONFIG.puerto, () => {
     console.log(`Servidor Psi4 + JSME escuchando en http://localhost:${CONFIG.puerto}`);

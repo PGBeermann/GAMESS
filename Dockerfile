@@ -1,6 +1,6 @@
 # Psi4 + JSME + 3Dmol.js — imagen para VPS con Dokploy
 #
-# Contiene: Psi4 1.11, RDKit y Node.js 22 (todo desde conda-forge) + la aplicación web.
+# Contiene: Psi4 1.11 (con PCMSolver), RDKit y Node.js 22 (todo desde conda-forge) + la aplicación web.
 # Puerto interno: 3000 (Dokploy/Traefik lo publica con HTTPS en su dominio).
 # Volumen recomendado: /app/datos  (resultados de los cálculos)
 # Variables: ver README.md (CLAVE_ACCESO, PSI4_HILOS, PSI4_MEMORIA, MAX_ATOMOS, ...)
@@ -33,8 +33,8 @@ COPY --chown=$MAMBA_USER:$MAMBA_USER servidor.js ./
 COPY --chown=$MAMBA_USER:$MAMBA_USER python ./python
 COPY --chown=$MAMBA_USER:$MAMBA_USER public ./public
 
-# Comprobación en la construcción: Psi4 y RDKit importan correctamente
-RUN python python/version.py < /dev/null
+# Comprobación en la construcción: Psi4 y RDKit importan correctamente y PCMSolver está activo
+RUN python python/version.py --exigir-pcm < /dev/null
 
 VOLUME ["/app/datos"]
 EXPOSE 3000

@@ -20,6 +20,48 @@
   const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado', congelar: 'optimización con una coordenada congelada' };
   const ELEMENTOS = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr I').split(' '));
 
+  // Solventes predefinidos de PCMSolver: id de la página, nombre y alias que acepta PCMSolver, ε estática
+  const SOLVENTES = [
+    { id: 'agua', pcm: 'Water', alias: 'H2O', nombre: 'Agua', formula: 'H2O', epsilon: 78.39 },
+    { id: 'carbonato_propileno', pcm: 'Propylene Carbonate', alias: 'C4H6O3', nombre: 'Carbonato de propileno', formula: 'C4H6O3', epsilon: 64.96 },
+    { id: 'dmso', pcm: 'Dimethylsulfoxide', alias: 'DMSO', nombre: 'Dimetilsulfóxido (DMSO)', formula: 'C2H6OS', epsilon: 46.7 },
+    { id: 'nitrometano', pcm: 'Nitromethane', alias: 'CH3NO2', nombre: 'Nitrometano', formula: 'CH3NO2', epsilon: 38.2 },
+    { id: 'acetonitrilo', pcm: 'Acetonitrile', alias: 'CH3CN', nombre: 'Acetonitrilo', formula: 'CH3CN', epsilon: 36.64 },
+    { id: 'metanol', pcm: 'Methanol', alias: 'CH3OH', nombre: 'Metanol', formula: 'CH3OH', epsilon: 32.63 },
+    { id: 'etanol', pcm: 'Ethanol', alias: 'CH3CH2OH', nombre: 'Etanol', formula: 'CH3CH2OH', epsilon: 24.55 },
+    { id: 'acetona', pcm: 'Acetone', alias: 'C2H6CO', nombre: 'Acetona', formula: 'C3H6O', epsilon: 20.7 },
+    { id: 'dicloroetano', pcm: '1,2-Dichloroethane', alias: 'C2H4CL2', nombre: '1,2-Dicloroetano', formula: 'C2H4Cl2', epsilon: 10.36 },
+    { id: 'diclorometano', pcm: 'Methylenechloride', alias: 'CH2CL2', nombre: 'Diclorometano', formula: 'CH2Cl2', epsilon: 8.93 },
+    { id: 'thf', pcm: 'Tetrahydrofurane', alias: 'THF', nombre: 'Tetrahidrofurano (THF)', formula: 'C4H8O', epsilon: 7.58 },
+    { id: 'anilina', pcm: 'Aniline', alias: 'C6H5NH2', nombre: 'Anilina', formula: 'C6H5NH2', epsilon: 6.89 },
+    { id: 'clorobenceno', pcm: 'Chlorobenzene', alias: 'C6H5CL', nombre: 'Clorobenceno', formula: 'C6H5Cl', epsilon: 5.621 },
+    { id: 'cloroformo', pcm: 'Chloroform', alias: 'CHCL3', nombre: 'Cloroformo', formula: 'CHCl3', epsilon: 4.9 },
+    { id: 'tolueno', pcm: 'Toluene', alias: 'C6H5CH3', nombre: 'Tolueno', formula: 'C6H5CH3', epsilon: 2.379 },
+    { id: 'dioxano', pcm: '1,4-Dioxane', alias: 'C4H8O2', nombre: '1,4-Dioxano', formula: 'C4H8O2', epsilon: 2.25 },
+    { id: 'benceno', pcm: 'Benzene', alias: 'C6H6', nombre: 'Benceno', formula: 'C6H6', epsilon: 2.247 },
+    { id: 'tetracloruro_carbono', pcm: 'Carbon Tetrachloride', alias: 'CCL4', nombre: 'Tetracloruro de carbono', formula: 'CCl4', epsilon: 2.228 },
+    { id: 'ciclohexano', pcm: 'Cyclohexane', alias: 'C6H12', nombre: 'Ciclohexano', formula: 'C6H12', epsilon: 2.023 },
+    { id: 'heptano', pcm: 'N-heptane', alias: 'C7H16', nombre: 'n-Heptano', formula: 'C7H16', epsilon: 1.92 },
+  ];
+  const MODELOS_PCM = ['IEFPCM', 'CPCM'];
+  // Busca un solvente por id de la página, nombre de PCMSolver o fórmula (sin distinguir mayúsculas)
+  function buscarSolvente(x) {
+    const k = String(x || '').trim().toLowerCase().replace(/\s+/g, ' ');
+    return SOLVENTES.find((s) => s.id === k || s.pcm.toLowerCase() === k || s.alias.toLowerCase() === k) || null;
+  }
+
+  // Bloque «pcm = { … }» de un .in (con llaves anidadas): devuelve su texto y su posición
+  function bloquePCM(texto) {
+    const m = /^[ \t]*pcm\s*=\s*\{/im.exec(texto);
+    if (!m) return null;
+    let nivel = 0;
+    for (let i = m.index + m[0].length - 1; i < texto.length; i++) {
+      if (texto[i] === '{') nivel++;
+      else if (texto[i] === '}' && --nivel === 0) return { inicio: m.index, fin: i + 1, cuerpo: texto.slice(m.index + m[0].length, i) };
+    }
+    throw new Error('El bloque «pcm = { … }» no tiene cerradas todas sus llaves.');
+  }
+
   function normalizarMetodo(m, avisos) {
     let x = String(m).trim().toLowerCase();
     const alias = { scf: 'hf', rhf: 'hf', uhf: 'hf', 'b3lyp-d3': 'b3lyp', 'b3lyp-d3bj': 'b3lyp', 'b3lyp-d3(bj)': 'b3lyp', wb97xd: 'wb97x-d', 'ωb97x-d': 'wb97x-d', m062x: 'm06-2x', 'df-mp2': 'mp2', 'conv-mp2': 'mp2', 'scs-mp2': 'mp2' };
@@ -152,17 +194,21 @@
     if (!mol) throw new Error('No se encontró un bloque «molecule { … }» en el archivo .in.');
     const titulo = mol[1] || '';
     const { xyz, carga, mult } = leerMolecula(mol[2], avisos);
-    const resto = sinComentarios.slice(0, mol.index) + sinComentarios.slice(mol.index + mol[0].length);
+    let resto = sinComentarios.slice(0, mol.index) + sinComentarios.slice(mol.index + mol[0].length);
+    // Solvatación PCM: bloque «pcm = { Medium { Solvent = … SolverType = … } … }» + «set pcm true»
+    const bpcm = bloquePCM(resto);
+    if (bpcm) resto = resto.slice(0, bpcm.inicio) + resto.slice(bpcm.fin);
     const lineas = resto.split('\n').map((l) => l.replace(/#.*$/, '').trim()).filter(Boolean);
 
     // Opciones: «set basis X», «set globals basis X» y bloques «set { … }»
-    let base = null; let esTS = false; let esIRC = false; const ignoradas = [];
+    let base = null; let esTS = false; let esIRC = false; let pcmActivo = false; const ignoradas = [];
     const irc = { direcciones: new Set(), puntos: null, paso: null };
     const opcion = (clave, valor) => {
       const k = clave.toLowerCase();
       const v = valor.trim().toLowerCase();
       if (k === 'basis') base = valor;
-      else if (k === 'opt_type') {
+      else if (k === 'pcm') pcmActivo = /^(true|1|yes|on)$/.test(v);
+      else if (k === 'pcm_scf_type') { /* total o separate: mismo resultado */ } else if (k === 'opt_type') {
         if (v === 'ts') esTS = true;
         else if (v === 'irc') esIRC = true;
       } else if (k === 'irc_direction') {
@@ -229,6 +275,27 @@
     let metodoTxt = llamadas[llamadas.length - 1].metodo;
     if (metodoTxt.includes('/')) { const [m, bb] = metodoTxt.split('/'); metodoTxt = m; if (!base) base = bb; }
     const metodo = normalizarMetodo(metodoTxt, avisos);
+    let pcm = null;
+    if (bpcm || pcmActivo) {
+      if (bpcm && !pcmActivo) {
+        avisos.push('El archivo tiene un bloque «pcm = { … }» pero no «set pcm true»: Psi4 lo ignoraría, así que el cálculo es en fase gaseosa.');
+      } else {
+        const solv = bpcm && /\bSolvent\s*=\s*([^\n}]+)/i.exec(bpcm.cuerpo);
+        const tipo = bpcm && /\bSolverType\s*=\s*([A-Za-z]+)/i.exec(bpcm.cuerpo);
+        let s = null;
+        if (!solv) avisos.push('«set pcm true» sin bloque «pcm = { … }» con «Solvent»: se usa agua (IEFPCM).');
+        else {
+          s = buscarSolvente(solv[1].replace(/["']/g, ''));
+          if (!s) throw new Error(`El solvente «${solv[1].trim()}» no está entre los predefinidos de PCMSolver (Water, Acetonitrile, Methanol, …).`);
+        }
+        s = s || buscarSolvente('agua');
+        const modelo = tipo && MODELOS_PCM.includes(tipo[1].toUpperCase()) ? tipo[1].toUpperCase() : 'IEFPCM';
+        if (tipo && modelo !== tipo[1].toUpperCase()) avisos.push(`SolverType ${tipo[1]}: se usa IEFPCM (disponibles: IEFPCM y CPCM).`);
+        if (metodo === 'mp2') throw new Error('PCM en Psi4 sólo funciona con HF o DFT (no con MP2): cambie el método o quite «set pcm true».');
+        pcm = { solvente: s.id, modelo };
+        avisos.push(`Solvatación PCM: ${s.nombre} (ε = ${s.epsilon}), ${modelo}. La cavidad es GePol con radios UFF.`);
+      }
+    }
     if (!base) { base = '6-31g*'; avisos.push('El archivo no indicaba la base: se usa 6-31G(d).'); }
     const baseId = normalizarBase(base);
     if (ignoradas.length) avisos.push(`Opciones ignoradas: ${ignoradas.slice(0, 6).join('; ')}${ignoradas.length > 6 ? '…' : ''}`);
@@ -241,7 +308,7 @@
     }
     return {
       titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos,
-      mep: /\bcubeprop\s*\(/i.test(sinBloques), molden: /\bmolden\s*\(/i.test(sinBloques), irc: opcionesIrc, scan: opcionesScan,
+      mep: /\bcubeprop\s*\(/i.test(sinBloques), molden: /\bmolden\s*\(/i.test(sinBloques), irc: opcionesIrc, scan: opcionesScan, pcm,
     };
   }
 
@@ -499,7 +566,7 @@
     ];
   }
 
-  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null }) {
+  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null, pcm = null }) {
     const nombre = String(titulo).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'molecula';
     const ref = Number(multiplicidad) === 1 ? 'rhf' : 'uhf';
     const llamadas = {
@@ -529,9 +596,11 @@
       return `  ${el.padEnd(2)} ${(+x).toFixed(8).padStart(14)} ${(+y).toFixed(8).padStart(14)} ${(+z).toFixed(8).padStart(14)}`;
     });
     const f = fecha instanceof Date ? fecha.toISOString().slice(0, 10) : String(fecha);
+    const solv = pcm ? buscarSolvente(pcm.solvente) : null;
+    const modeloPcm = solv && MODELOS_PCM.includes(pcm.modelo) ? pcm.modelo : 'IEFPCM';
     return [
       `# Entrada de Psi4 generada por «Química Cuántica con Psi4» (UNACHI) — ${f}`,
-      `# ${titulo} · ${metodo.toUpperCase()}/${base} · ${NOMBRE_TAREA[tarea] || tarea}`,
+      `# ${titulo} · ${metodo.toUpperCase()}/${base} · ${NOMBRE_TAREA[tarea] || tarea}${solv ? ` · en ${solv.nombre} (PCM)` : ' · fase gaseosa'}`,
       '# Ejecutar con:  psi4 archivo.in archivo.out',
       '',
       `memory ${memoria}`,
@@ -551,8 +620,28 @@
       '  scf_type df',
       ...(tarea === 'ts' ? ['  opt_type ts', '  full_hess_every 0'] : []),
       ...(tarea === 'irc' ? ['  opt_type irc', `  irc_points ${irc?.puntos ?? 20}`, `  irc_step_size ${irc?.paso ?? 0.2}`, '  write_opt_history true'] : []),
+      ...(solv ? ['  pcm true', '  pcm_scf_type total'] : []),
       '}',
       '',
+      ...(solv ? [
+        `# Solvatación PCM (PCMSolver): ${solv.nombre}, ε = ${solv.epsilon}. Psi4 no tiene gradientes analíticos`,
+        '# con PCM: las optimizaciones y frecuencias usan diferencias finitas de energías (más lentas).',
+        'pcm = {',
+        '  Units = Angstrom',
+        '  Medium {',
+        `    SolverType = ${modeloPcm}`,
+        `    Solvent = ${solv.pcm}`,
+        '  }',
+        '  Cavity {',
+        '    RadiiSet = UFF',
+        '    Type = GePol',
+        '    Scaling = False',
+        '    Area = 0.3',
+        '    Mode = Implicit',
+        '  }',
+        '}',
+        '',
+      ] : []),
       ...llamadas,
       '',
       "oeprop(wfn, 'DIPOLE', 'MULLIKEN_CHARGES', title='SCF')",
@@ -564,7 +653,7 @@
     ].join('\n');
   }
 
-  const api = { leerEntradaPsi4, leerXYZ, generarEntradaPsi4 };
+  const api = { leerEntradaPsi4, leerXYZ, generarEntradaPsi4, SOLVENTES, MODELOS_PCM, buscarSolvente };
   Object.assign(global, api);
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -137,6 +137,13 @@
         <label>Multiplicidad
           <input id="multiplicidad" type="number" min="1" max="5" step="1" value="1">
         </label>
+        <label title="Modelo de solvente continuo polarizable (PCM) de PCMSolver">Solvente (PCM)
+          <select id="solvente"><option value="ninguno">Sin solvente (fase gaseosa)</option></select>
+        </label>
+        <label class="solo-pcm" hidden>Modelo de solvatación
+          <select id="modeloPcm"></select>
+        </label>
+        <p class="nota largo solo-pcm" id="notaPcm" hidden></p>
         <label class="solo-irc" hidden>Dirección del IRC
           <select id="ircDireccion">
             <option value="ambas">Ambas: reactivos ← TS → productos</option>
