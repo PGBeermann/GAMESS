@@ -173,6 +173,13 @@ npm start
 
 Luego abra http://localhost:3000.
 
+**Windows sin tocar el perfil de PowerShell**: con `micromamba.exe` en
+`%LOCALAPPDATA%\micromamba` y el entorno creado con
+`micromamba create -r %USERPROFILE%\micromamba -f environment.yml`, basta con hacer doble clic en
+`iniciar-local.cmd` (usa `micromamba run`, sin `activate`). Nota: en Windows, PCMSolver añade
+unos 20 s a cada energía (en Linux, ~1 s), así que las optimizaciones con solvente conviene
+hacerlas en el servidor.
+
 ## API
 
 | Método | Ruta | Descripción |
