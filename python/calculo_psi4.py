@@ -4,7 +4,7 @@ Uso:  python calculo_psi4.py <carpeta_del_trabajo>
 
 La carpeta debe contener `entrada.json` (lo escribe servidor.js):
     {"xyz": "C 0 0 0\\nH ...", "carga": 0, "multiplicidad": 1,
-     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts|irc|scan",
+     "metodo": "b3lyp", "base": "6-31g*", "tarea": "energia|optimizacion|frecuencias|ts|irc|scan|congelar",
      "mep": true, "hilos": 2, "memoria": "2 GB", "titulo": "etanol"}
 
 Archivos que produce en la carpeta:
@@ -12,6 +12,8 @@ Archivos que produce en la carpeta:
     resultado.json    resumen para la interfaz web
     geometria.xyz     geometría final
     homo.cube / lumo.cube / densidad.cube / mep.cube   (superficies para el visor 3D)
+    orbitales.molden  función de onda en formato Molden (siempre)
+    molden/irc_001.molden… o molden/scan_001.molden…   uno por punto de un IRC o de un scan
 
 Las líneas que empiezan con "@@ETAPA" en la salida estándar las usa el servidor
 para mostrar el progreso.
@@ -34,7 +36,7 @@ AU_DEBYE = psi4.constants.dipmom_au2debye
 METODOS = {"hf", "b3lyp", "pbe0", "wb97x-d", "m06-2x", "mp2"}
 BASES = {"sto-3g", "3-21g", "6-31g", "6-31g*", "6-31g**", "6-31+g*", "6-311g**",
          "cc-pvdz", "aug-cc-pvdz", "def2-svp", "def2-tzvp"}
-TAREAS = {"energia", "optimizacion", "frecuencias", "ts", "irc", "scan"}
+TAREAS = {"energia", "optimizacion", "frecuencias", "ts", "irc", "scan", "congelar"}
 
 
 def etapa(texto):
@@ -355,40 +357,45 @@ SCAN_TIPOS = {
 }
 
 
-def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
+def scan_relajado(metodo, mol, atomos, valores, tipo="distancia", congelar=False):
     """Scan relajado de una distancia, un ángulo o un diedro (átomos numerados desde 1).
 
     Para cada valor se coloca la coordenada, se congela (optking: frozen_distance, frozen_bend
     o frozen_dihedral) y se optimiza el resto de la molécula, partiendo de la geometría
     optimizada del punto anterior. Al final se escribe la tabla del scan en el .out.
+    Con congelar=True hay un solo valor: es una optimización con la coordenada congelada en ese
+    valor (sin optimizar antes la geometría de partida).
     """
     natom, opcion, simbolo, unidad = SCAN_TIPOS[tipo]
     idx = [a - 1 for a in atomos[:natom]]
     simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
     etiqueta = "–".join(f"{simbolos[i]}{i + 1}" for i in idx)
     fmt = (lambda v: f"{v:6.3f} Å") if tipo == "distancia" else (lambda v: f"{v:7.2f}°")
+    nombre = f"Optimización con {simbolo}({etiqueta}) congelada" if congelar else f"Scan relajado {simbolo}({etiqueta})"
     contador, puntos = [0], []
     # Pasos cortos (como hace optking en TS/IRC): con pasos grandes, la coordenada congelada se
     # desvía al pasar de coordenadas internas a cartesianas y la molécula puede deformarse.
     pasos_cortos = {"intrafrag_step_limit": 0.2, "intrafrag_step_limit_max": 0.3}
     tolerancia = 0.01 if tipo == "distancia" else 0.5  # Å o grados
-    with en_vivo(mol, contador):
-        # El scan parte de una geometría optimizada con este método (la de MMFF no es un mínimo
-        # aquí): así cada punto es un desplazamiento pequeño y optking converge en pocos pasos.
-        etapa(f"Scan relajado {simbolo}({etiqueta}): optimizando primero la geometría de partida")
-        inicial = a_numpy(mol.geometry()).reshape(-1, 3).copy()
-        try:
-            psi4.optimize(metodo, molecule=mol)
-        except Exception as e:  # noqa: BLE001
-            if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
-                raise
-            mol.set_geometry(psi4.core.Matrix.from_array(inicial))
-            mol.update_geometry()
+    if not congelar:
+        with en_vivo(mol, contador):
+            # El scan parte de una geometría optimizada con este método (la de MMFF no es un mínimo
+            # aquí): así cada punto es un desplazamiento pequeño y optking converge en pocos pasos.
+            etapa(f"{nombre}: optimizando primero la geometría de partida")
+            inicial = a_numpy(mol.geometry()).reshape(-1, 3).copy()
+            try:
+                psi4.optimize(metodo, molecule=mol)
+            except Exception as e:  # noqa: BLE001
+                if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
+                    raise
+                mol.set_geometry(psi4.core.Matrix.from_array(inicial))
+                mol.update_geometry()
     psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom]), **pasos_cortos})
     energias_pasos = []  # energía de cada paso (la registra en_vivo)
     with en_vivo(mol, contador, energias_pasos):
         for n, valor in enumerate(valores, 1):
-            etapa(f"Scan relajado {simbolo}({etiqueta}): punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
+            etapa(f"{nombre} en {fmt(valor).strip()}" if congelar else
+                  f"{nombre}: punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
             previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()  # última geometría buena (bohr)
             partida = None  # geometría desde la que se repite el punto (si hace falta)
             desviada = lambda c: (abs(medir_coordenada(c, tipo, idx) - valor) if tipo != "diedro"  # noqa: E731
@@ -421,7 +428,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
                         if buenas:
                             mejor = min(buenas, key=lambda r: r["energia"])
                             partida = np.array([[float(v) for v in l.split()[1:4]] for l in mejor["xyz"].splitlines()]) / BOHR_ANG
-                            etapa(f"Scan relajado {simbolo}({etiqueta}): repitiendo el punto {n} desde la mejor geometría visitada")
+                            etapa(f"{nombre}: repitiendo {'la optimización' if congelar else f'el punto {n}'} desde la mejor geometría visitada")
                             psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
                             continue
                 sim, coords = geometria_actual(mol)
@@ -432,7 +439,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
                 nota = f"la coordenada congelada se desvió a {fmt(final).strip()}"
                 if intento == 1:
                     partida = None  # se repite desde la última geometría buena
-                    etapa(f"Scan relajado {simbolo}({etiqueta}): repitiendo el punto {n} con pasos más cortos")
+                    etapa(f"{nombre}: repitiendo {'la optimización' if congelar else f'el punto {n}'} con pasos más cortos")
                     psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
             psi4.set_options(pasos_cortos)
             puntos.append({"valor": float(valor), "valor_final": final, "energia": energia,
@@ -457,15 +464,19 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
     # Tabla en el .out (como haría un script de Psi4 con psi4.core.print_out)
     congelado = {"distancia": "la distancia queda congelada", "angulo": "el ángulo queda congelado",
                   "diedro": "el diedro queda congelado"}[tipo]
-    psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}) =====\n")
-    psi4.core.print_out(f"ΔE respecto al primer punto; {congelado} ({opcion}) en cada optimización.\n\n")
+    if congelar:
+        psi4.core.print_out(f"\n\n===== OPTIMIZACIÓN CON {simbolo}({etiqueta}) CONGELADA ({metodo.upper()}) =====\n")
+        psi4.core.print_out(f"Se coloca el valor y {congelado} ({opcion}) mientras se optimiza el resto.\n\n")
+    else:
+        psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}) =====\n")
+        psi4.core.print_out(f"ΔE respecto al primer punto; {congelado} ({opcion}) en cada optimización.\n\n")
     for p in puntos:
         if p["energia"] is None:
             psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   sin energía ({p['nota']})\n")
             continue
         aviso = ("   (convergió en energía)" if p["nota"] else "") if p["convergio"] else "   (no convergió)"
-        psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   E = {p['energia']:.10f} Eh   "
-                            f"ΔE = {p['de_kcal']:8.3f} kcal/mol{aviso}\n")
+        de = "" if congelar else f"   ΔE = {p['de_kcal']:8.3f} kcal/mol"
+        psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   E = {p['energia']:.10f} Eh{de}{aviso}\n")
     psi4.core.print_out("=" * 60 + "\n")
 
     minimo = min(validos, key=lambda p: p["energia"])
@@ -478,7 +489,10 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
             "etiqueta": etiqueta, "puntos": puntos,
             "valor_minimo": minimo["valor"], "valor_maximo": maximo["valor"],
             "rango_kcal": (maximo["energia"] - minimo["energia"]) * HARTREE_KCAL,
-            "no_convergidos": sum(1 for p in puntos if not p["convergio"])}
+            "no_convergidos": sum(1 for p in puntos if not p["convergio"]),
+            # Pasos de la optimización (pestaña «Optimización» de una coordenada congelada)
+            "pasos": [{"paso": k, "energia": r["energia"], "xyz": r["xyz"]}
+                      for k, r in enumerate(energias_pasos, 1)] if congelar else None}
 
 
 # ---------- Archivos para IboView (formato Molden) ----------
@@ -487,7 +501,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
 # un .molden por punto: IboView los carga como cuadros de una trayectoria y alinea los IBO entre
 # cuadros, lo que permite seguir el flujo de electrones del mecanismo.
 
-def archivos_iboview(metodo, mol, scf, carpeta, mult, datos_irc, titulo, base):
+def archivos_iboview(metodo, mol, scf, carpeta, mult, datos_irc, datos_scan, titulo, base):
     info = {}
     psi4.molden(scf, str(carpeta / "orbitales.molden"))
     info["orbitales"] = True
@@ -507,65 +521,98 @@ def archivos_iboview(metodo, mol, scf, carpeta, mult, datos_irc, titulo, base):
                 info["aviso_naturales"] = f"No se pudieron calcular los orbitales naturales MP2: {mensaje_error(e)}"
     if datos_irc and datos_irc.get("puntos"):
         info.update(iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base))
+    elif datos_scan and len(datos_scan.get("puntos") or []) > 1:
+        info.update(iboview_scan(metodo, mol, carpeta, datos_scan, titulo, base))
     return info
 
 
-def iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base):
-    """Un .molden por punto del IRC (reactivo → TS → producto), empaquetados en irc_iboview.zip."""
-    import shutil
+def molden_por_punto(metodo, mol, carpeta, prefijo, puntos, filas, cabecera, nota_orden):
+    """Un .molden por geometría: molden/<prefijo>_001.molden… (sueltos, para guardarlos con otro
+    nombre desde la página) y <prefijo>_iboview.zip con todos, un .xyz de varios cuadros y LEAME.txt.
+
+    puntos: lista de (xyz en Å, comentario para el .xyz); filas: una línea de la tabla por punto.
+    """
     import zipfile
 
     metodo_scf = "hf" if metodo == "mp2" else metodo  # los IBO salen de los orbitales SCF
-    pts = sorted(datos_irc["puntos"], key=lambda p: p["s"])
-    geom_ts = a_numpy(mol.geometry()).reshape(-1, 3).copy()
-    dir_m = carpeta / "irc_molden"
+    geom_previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()
+    dir_m = carpeta / "molden"
     dir_m.mkdir(exist_ok=True)
-    nombres, filas, marcos = [], [], []
+    nombres, marcos = [], []
     try:
-        for k, p in enumerate(pts, 1):
-            etapa(f"Archivos para IboView: función de onda del punto {k} de {len(pts)} del IRC")
-            coords = np.array([[float(v) for v in l.split()[1:4]] for l in p["xyz"].splitlines()])
+        for k, (xyz, comentario) in enumerate(puntos, 1):
+            etapa(f"Archivos .molden: función de onda del punto {k} de {len(puntos)}")
+            coords = np.array([[float(v) for v in l.split()[1:4]] for l in xyz.splitlines()])
             mol.set_geometry(psi4.core.Matrix.from_array(coords / BOHR_ANG))
             mol.update_geometry()
             _, w = psi4.energy(metodo_scf, return_wfn=True, molecule=mol)
-            nombre = f"irc_{k:03d}.molden"
+            nombre = f"{prefijo}_{k:03d}.molden"
             psi4.molden(funcion_scf(w), str(dir_m / nombre))
             psi4.core.clean()
             nombres.append(nombre)
-            ts = abs(p["s"]) < 1e-9
-            filas.append(f"{nombre}   s = {p['s'] + 0.0:+8.3f}   E(IRC) = {p['energia']:.8f} Eh   "
-                         f"ΔE = {p['de_kcal']:+8.2f} kcal/mol{'   ← TS' if ts else ''}")
-            lineas = p["xyz"].strip().splitlines()
-            marcos.append(f"{len(lineas)}\n{nombre} s={p['s'] + 0.0:+.3f} E={p['energia']:.8f}{' TS' if ts else ''}\n" + "\n".join(lineas))
+            lineas = xyz.strip().splitlines()
+            marcos.append(f"{len(lineas)}\n{nombre} {comentario}\n" + "\n".join(lineas))
     finally:
-        mol.set_geometry(psi4.core.Matrix.from_array(geom_ts))
+        mol.set_geometry(psi4.core.Matrix.from_array(geom_previa))
         mol.update_geometry()
     nota_mp2 = ("\nLa función de onda de cada punto es la HF de referencia del MP2: los IBO se construyen\n"
                 "a partir de orbitales SCF.\n") if metodo == "mp2" else ""
-    leame = f"""Archivos para IboView — IRC de «{titulo}» ({metodo.upper()}/{base})
+    leame = f"""{cabecera}
 
-irc_001.molden … {nombres[-1]}: función de onda (base y orbitales, formato Molden) en cada punto
-del camino de reacción, en orden: reactivo (s < 0) → estado de transición (s = 0) → producto (s > 0).
+{prefijo}_001.molden … {nombres[-1]}: función de onda (base y orbitales, formato Molden) en cada punto,
+{nota_orden}
 {nota_mp2}
 Cómo verlos en IboView
   1. Descomprima esta carpeta.
-  2. En IboView, abra TODOS los irc_*.molden a la vez (selección múltiple en el diálogo de abrir).
+  2. En IboView, abra TODOS los {prefijo}_*.molden a la vez (selección múltiple en el diálogo de abrir).
      IboView los carga como cuadros (frames) de una misma trayectoria, calcula los orbitales
      intrínsecos de enlace (IBO) en cada cuadro y los alinea entre cuadros.
   3. Recorra o reproduzca los cuadros y siga los IBO que cambian (los que se forman, se rompen o
      se desplazan): ese es el flujo de electrones del mecanismo.
 
-irc.xyz: las mismas geometrías en un solo archivo XYZ de varios cuadros (Avogadro, Jmol, VMD).
+{prefijo}.xyz: las mismas geometrías en un solo archivo XYZ de varios cuadros (Avogadro, Jmol, VMD).
 
-Puntos del IRC (ΔE respecto al TS):
-""" + "\n".join(filas) + "\n"
-    with zipfile.ZipFile(carpeta / "irc_iboview.zip", "w", zipfile.ZIP_DEFLATED) as z:
+Puntos:
+""" + "\n".join(f"{n}   {f}" for n, f in zip(nombres, filas)) + "\n"
+    with zipfile.ZipFile(carpeta / f"{prefijo}_iboview.zip", "w", zipfile.ZIP_DEFLATED) as z:
         for n in nombres:
-            z.write(dir_m / n, f"irc_iboview/{n}")
-        z.writestr("irc_iboview/irc.xyz", "\n".join(marcos) + "\n")
-        z.writestr("irc_iboview/LEAME.txt", leame)
-    shutil.rmtree(dir_m, ignore_errors=True)
-    return {"irc_zip": True, "irc_puntos": len(nombres)}
+            z.write(dir_m / n, f"{prefijo}_iboview/{n}")
+        z.writestr(f"{prefijo}_iboview/{prefijo}.xyz", "\n".join(marcos) + "\n")
+        z.writestr(f"{prefijo}_iboview/LEAME.txt", leame)
+    return nombres
+
+
+def iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base):
+    """Un .molden por punto del IRC (reactivo → TS → producto)."""
+    pts = sorted(datos_irc["puntos"], key=lambda p: p["s"])
+    puntos, filas = [], []
+    for p in pts:
+        ts = abs(p["s"]) < 1e-9
+        puntos.append((p["xyz"], f"s={p['s'] + 0.0:+.3f} E={p['energia']:.8f}{' TS' if ts else ''}"))
+        filas.append(f"s = {p['s'] + 0.0:+8.3f}   E(IRC) = {p['energia']:.8f} Eh   "
+                     f"ΔE = {p['de_kcal']:+8.2f} kcal/mol{'   ← TS' if ts else ''}")
+    nombres = molden_por_punto(
+        metodo, mol, carpeta, "irc", puntos, filas,
+        f"Archivos para IboView — IRC de «{titulo}» ({metodo.upper()}/{base})",
+        "en orden: reactivo (s < 0) → estado de transición (s = 0) → producto (s > 0).")
+    return {"irc_zip": True, "irc_puntos": len(nombres), "puntos_tipo": "irc", "puntos_molden": nombres}
+
+
+def iboview_scan(metodo, mol, carpeta, datos_scan, titulo, base):
+    """Un .molden por punto del scan, en el orden en que se recorrió."""
+    s, u, etq = datos_scan["simbolo"], datos_scan["unidad"], datos_scan["etiqueta"]
+    dec = 3 if u == "Å" else 2
+    puntos, filas = [], []
+    for p in datos_scan["puntos"]:
+        aviso = "" if p["convergio"] else "   (no convergió)"
+        e = f"E = {p['energia']:.8f} Eh   ΔE = {p['de_kcal']:+8.2f} kcal/mol" if p["energia"] is not None else "sin energía"
+        puntos.append((p["xyz"], f"{s}={p['valor']:.{dec}f}{u}" + (f" E={p['energia']:.8f}" if p["energia"] is not None else "")))
+        filas.append(f"{s}({etq}) = {p['valor']:.{dec}f} {u}   {e}{aviso}")
+    nombres = molden_por_punto(
+        metodo, mol, carpeta, "scan", puntos, filas,
+        f"Archivos para IboView — scan de {s}({etq}) de «{titulo}» ({metodo.upper()}/{base})",
+        "en el orden del scan (ΔE respecto al primer punto).")
+    return {"scan_zip": True, "puntos_tipo": "scan", "puntos_molden": nombres}
 
 
 def propiedades_scf(scf, n_atomos, simbolos):
@@ -780,16 +827,25 @@ def main():
             resultado["irc"] = irc(metodo, mol, direccion, puntos, paso)
             etapa("Calculando la función de onda en el estado de transición")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
-        elif tarea == "scan":
+        elif tarea in ("scan", "congelar"):
             op = entrada.get("scan") or {}
             tipo = op.get("tipo") if op.get("tipo") in SCAN_TIPOS else "distancia"
             natom = SCAN_TIPOS[tipo][0]
             atomos = [int(a) for a in (op.get("atomos") or [])][:natom]
-            valores = [float(v) for v in (op.get("valores") or [])][:40]
+            valores = [float(v) for v in (op.get("valores") or [])][:1 if tarea == "congelar" else 40]
             if len(atomos) != natom or len(set(atomos)) != natom or not all(1 <= a <= n_atomos for a in atomos) or not valores:
                 raise ValueError("Opciones del scan no válidas.")
-            resultado["scan"] = scan_relajado(metodo, mol, atomos, valores, tipo)
-            etapa("Calculando la función de onda en el punto de menor energía del scan")
+            datos = scan_relajado(metodo, mol, atomos, valores, tipo, congelar=tarea == "congelar")
+            if tarea == "congelar":
+                p = datos["puntos"][0]
+                resultado["congelado"] = {**{k: datos[k] for k in ("tipo", "simbolo", "unidad", "atomos", "etiqueta")},
+                                          **{k: p[k] for k in ("valor", "valor_final", "energia", "convergio", "nota")}}
+                resultado["trayectoria"] = datos["pasos"] or []
+                etapa("Calculando la función de onda en la geometría optimizada")
+            else:
+                datos.pop("pasos", None)
+                resultado["scan"] = datos
+                etapa("Calculando la función de onda en el punto de menor energía del scan")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         else:
             if tarea == "ts":
@@ -843,13 +899,13 @@ def main():
                                                    bool(entrada.get("mep")))
             except Exception as e:  # noqa: BLE001
                 resultado["aviso_cubos"] = mensaje_error(e)
-        if entrada.get("molden", True):
-            etapa("Escribiendo los orbitales para IboView (.molden)")
-            try:
-                resultado["iboview"] = archivos_iboview(metodo, mol, scf, carpeta, mult, resultado.get("irc"),
-                                                        entrada.get("titulo", "molecula"), base)
-            except Exception as e:  # noqa: BLE001
-                resultado["aviso_iboview"] = f"No se pudieron escribir los archivos para IboView: {mensaje_error(e)}"
+        # La función de onda en formato Molden se escribe siempre (y una por punto en IRC y scan)
+        etapa("Escribiendo la función de onda en formato Molden")
+        try:
+            resultado["iboview"] = archivos_iboview(metodo, mol, scf, carpeta, mult, resultado.get("irc"),
+                                                    resultado.get("scan"), entrada.get("titulo", "molecula"), base)
+        except Exception as e:  # noqa: BLE001
+            resultado["aviso_iboview"] = f"No se pudieron escribir los archivos .molden: {mensaje_error(e)}"
         resultado["ok"] = True
     except Exception as e:  # noqa: BLE001
         resultado["error"] = mensaje_error(e, tarea)

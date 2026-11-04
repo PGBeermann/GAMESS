@@ -17,7 +17,7 @@
   const BASES = ['sto-3g', '3-21g', '6-31g', '6-31g*', '6-31g**', '6-31+g*', '6-311g**', 'cc-pvdz', 'aug-cc-pvdz', 'def2-svp', 'def2-tzvp'];
   // Opciones que no cambian el resultado químico (o que el servidor ya fija): se ignoran sin aviso
   const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads|full_hess_every|step_type|hess_update|write_opt_history)$/;
-  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado' };
+  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado', congelar: 'optimización con una coordenada congelada' };
   const ELEMENTOS = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr I').split(' '));
 
   function normalizarMetodo(m, avisos) {
@@ -204,7 +204,8 @@
     // un bucle for con los valores. El servidor hace el scan equivalente (no ejecuta el bucle).
     const opcionesScan = (hayOpt && !esIRC && !esTS) ? leerScan(textoResto, sinBloques, xyz, avisos) : null;
     if (opcionesScan) {
-      tarea = 'scan';
+      tarea = opcionesScan.congelar ? 'congelar' : 'scan';
+      delete opcionesScan.congelar;
     } else if (esIRC) {
       if (!hayOpt) throw new Error('«opt_type irc» necesita una llamada optimize(…): el IRC lo recorre el optimizador.');
       tarea = 'irc';
@@ -232,7 +233,7 @@
     const baseId = normalizarBase(base);
     if (ignoradas.length) avisos.push(`Opciones ignoradas: ${ignoradas.slice(0, 6).join('; ')}${ignoradas.length > 6 ? '…' : ''}`);
     // Código Python que el servidor no ejecuta (bucles, print_out, variables…): se avisa
-    if (tarea !== 'scan') {
+    if (tarea !== 'scan' && tarea !== 'congelar') {
       const codigo = sinBloques.split('\n').map((l) => l.trim()).filter((l) => l && !LINEA_CONOCIDA.test(l));
       if (codigo.length) {
         avisos.push(`El archivo contiene código Python que el servidor no ejecuta (p. ej. «${codigo[0].slice(0, 70)}»${codigo.length > 1 ? ` y ${codigo.length - 1} línea(s) más` : ''}): sólo se interpretan la molécula, el método, la base y el tipo de cálculo. Para un scan relajado use «frozen_distance» (o «fixed_distance») con un bucle for.`);
@@ -252,8 +253,11 @@
   // Valores de un bucle: lista literal, np.arange(a, b, paso), np.linspace(a, b, n) o una variable con eso
   function valoresDe(expr, texto) {
     let e = expr.trim();
-    const envoltura = /^(?:enumerate|list|sorted|reversed|tuple)\s*\((.*)\)$/.exec(e);
-    if (envoltura) e = envoltura[1].trim();
+    const envoltura = /^(enumerate|list|sorted|reversed|tuple)\s*\((.*)\)$/.exec(e);
+    if (envoltura) {
+      e = envoltura[2].trim();
+      if (envoltura[1] === 'enumerate') e = e.replace(/,\s*(?:start\s*=\s*)?-?\d+\s*$/, '').trim(); // enumerate(lista, 1)
+    }
     if (/^[A-Za-z_]\w*$/.test(e)) {
       const asignacion = new RegExp(`^\\s*${e}\\s*=\\s*(.+)$`, 'm').exec(texto);
       if (!asignacion) return null;
@@ -321,11 +325,18 @@
       if (v) { valores = v; break; }
     }
     if (!valores) {
+      // Sin bucle: una sola optimización con la coordenada congelada (en el valor de colocar(…),
+      // en el de fixed_/ranged_ o, si no hay ninguno, en el valor de la geometría)
       const fijos = numeros(fichas.slice(c.natom).join(' '));
-      if (modo === 'fixed' && fijos.length) valores = [fijos[0]];
+      const colocar = /\bcolocar\s*\(\s*\w+\s*,\s*\[[^\]]*\]\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/.exec(sinBloques);
+      if (colocar) valores = [Number(colocar[1])];
+      else if (modo === 'fixed' && fijos.length) valores = [fijos[0]];
       else if (modo === 'ranged' && fijos.length >= 2) valores = [(fijos[0] + fijos[1]) / 2];
       else valores = [+medirPuntos(atomos.map((a) => filas[a - 1].slice(1, 4).map(Number))).toFixed(tipo === 'distancia' ? 4 : 2)];
-      avisos.push(`No se encontró un bucle con los valores del scan: se hace una sola optimización con ${c.simbolo}(${etq}) = ${valores[0]} ${c.unidad} fijo.`);
+      if (valores[0] < c.min || valores[0] > c.max) throw new Error(`El valor de ${c.nombre} congelado debe estar entre ${c.min} y ${c.max} ${c.unidad} (leído: ${valores[0]}).`);
+      avisos.push(`Optimización con ${c.simbolo}(${etq}) congelada en ${valores[0]} ${c.unidad}: se coloca el valor (el último átomo se mueve con lo que cuelga de él), se congela con «${c.frozen}» y se optimiza el resto de la molécula.`);
+      if (modo === 'fixed') avisos.push(`«fixed_${r[2]}» no existe en Psi4 1.11 (optking 0.5): el servidor coloca el valor y lo congela con «${c.frozen}».`);
+      return { tipo, atomos, valores, congelar: true };
     }
     if (valores.length > 40) {
       avisos.push(`El scan tenía ${valores.length} puntos: se usan los 40 primeros.`);
@@ -354,17 +365,68 @@
 
   // Código del scan relajado para Psi4 ≥ 1.7 (optking 0.5 ya no tiene fixed_*): en cada punto se
   // coloca el valor moviendo el fragmento del último átomo, se congela y se optimiza el resto.
-  function lineasScan(nombre, metodo, xyz, scan) {
+  function datosCoordenada(xyz, scan) {
     const tipo = SCAN_TIPOS[scan?.tipo] ? scan.tipo : 'distancia';
     const c = SCAN_TIPOS[tipo];
     const atomos = (scan?.atomos || [1, 2, 3, 4]).slice(0, c.natom);
-    const valores = scan?.valores || [];
     const sim = String(xyz).trim().split(/\r?\n/).map((l) => l.trim().split(/\s+/)[0]);
     const etq = atomos.map((a) => `${sim[a - 1] || ''}${a}`).join('–');
+    return { tipo, c, atomos, etq, valores: scan?.valores || [] };
+  }
+
+  // Optimización con una coordenada congelada en un valor (sin scan)
+  function lineasCongelar(nombre, metodo, xyz, scan) {
+    const { tipo, c, atomos, etq, valores } = datosCoordenada(xyz, scan);
+    const v = Number(valores[0]);
+    const formato = tipo === 'distancia' ? ':.4f} Å' : ':.2f}°';
+    return [
+      `# Optimización con ${c.simbolo}(${etq}) congelada en ${v} ${c.unidad}: se coloca el valor (el último átomo se mueve`,
+      `# con todo lo que cuelga de él), se congela (${c.frozen}) y se optimiza el resto de la molécula.`,
+      ...lineasColocar(),
+      `psi4.set_options({'${c.frozen}': '${atomos.join(' ')}'})`,
+      `colocar(${nombre}, [${atomos.map((a) => a - 1).join(', ')}], ${v.toFixed(4)})`,
+      `E, wfn = optimize('${metodo}', return_wfn=True)`,
+      `psi4.set_options({'${c.frozen}': ''})`,
+      `final = medir(${nombre}.geometry().np * psi4.constants.bohr2angstroms, [${atomos.map((a) => a - 1).join(', ')}])`,
+      `psi4.core.print_out(f"\\n\\n===== ${c.simbolo}(${etq}) CONGELADA = {final${formato}   E = {E:.10f} Eh =====\\n")`,
+    ];
+  }
+
+  function lineasScan(nombre, metodo, xyz, scan) {
+    const { tipo, c, atomos, etq, valores } = datosCoordenada(xyz, scan);
     const formato = tipo === 'distancia' ? '{v:6.3f} Å' : '{v:7.2f}°';
     return [
       `# Scan relajado de ${c.nombre} ${c.simbolo}(${etq}): en cada punto se fija el valor (${c.frozen})`,
       '# y se optimiza el resto, partiendo de la geometría del punto anterior.',
+      '# Cada punto deja su función de onda en scan_001.molden, scan_002.molden… (IboView).',
+      ...lineasColocar(),
+      `psi4.set_options({'${c.frozen}': '${atomos.join(' ')}'})`,
+      'resultados, geometrias = [], []',
+      `for n, v in enumerate([${valores.map((v) => v.toFixed(4)).join(', ')}], 1):`,
+      `    colocar(${nombre}, [${atomos.map((a) => a - 1).join(', ')}], v)`,
+      `    e, wfn_v = optimize('${metodo}', return_wfn=True)`,
+      "    molden(wfn_v, f'scan_{n:03d}.molden')",
+      '    resultados.append((v, e))',
+      `    geometrias.append(${nombre}.geometry().clone())`,
+      `psi4.set_options({'${c.frozen}': ''})`,
+      '',
+      `psi4.core.print_out("\\n\\n===== SCAN RELAJADO ${c.simbolo}(${etq}) =====\\n")`,
+      'e_ref = resultados[0][1]',
+      'for v, e in resultados:',
+      `    psi4.core.print_out(f"${c.simbolo}(${etq}) = ${formato}   E = {e:.10f} Eh   ΔE = {(e - e_ref) * psi4.constants.hartree2kcalmol:8.3f} kcal/mol\\n")`,
+      '',
+      '# Función de onda en el punto de menor energía',
+      'imin = min(range(len(resultados)), key=lambda k: resultados[k][1])',
+      `${nombre}.set_geometry(geometrias[imin])`,
+      `${nombre}.update_geometry()`,
+      `E, wfn = energy('${metodo}', return_wfn=True)`,
+    ];
+  }
+
+  // colocar(): pone la distancia, el ángulo o el diedro en un valor moviendo el último átomo
+  // con todo lo que cuelga de él (lo mismo que hace el servidor)
+  function lineasColocar() {
+    return [
       'import numpy as np',
       "RADIOS = {'H': 0.31, 'C': 0.76, 'N': 0.71, 'O': 0.66, 'F': 0.57, 'P': 1.07, 'S': 1.05, 'Cl': 1.02, 'Br': 1.20, 'I': 1.39}",
       '',
@@ -434,29 +496,10 @@
       '    mol.set_geometry(psi4.core.Matrix.from_array(x / psi4.constants.bohr2angstroms))',
       '    mol.update_geometry()',
       '',
-      `psi4.set_options({'${c.frozen}': '${atomos.join(' ')}'})`,
-      'resultados, geometrias = [], []',
-      `for v in [${valores.map((v) => v.toFixed(4)).join(', ')}]:`,
-      `    colocar(${nombre}, [${atomos.map((a) => a - 1).join(', ')}], v)`,
-      `    e = optimize('${metodo}')`,
-      '    resultados.append((v, e))',
-      `    geometrias.append(${nombre}.geometry().clone())`,
-      `psi4.set_options({'${c.frozen}': ''})`,
-      '',
-      `psi4.core.print_out("\\n\\n===== SCAN RELAJADO ${c.simbolo}(${etq}) =====\\n")`,
-      'e_ref = resultados[0][1]',
-      'for v, e in resultados:',
-      `    psi4.core.print_out(f"${c.simbolo}(${etq}) = ${formato}   E = {e:.10f} Eh   ΔE = {(e - e_ref) * psi4.constants.hartree2kcalmol:8.3f} kcal/mol\\n")`,
-      '',
-      '# Función de onda en el punto de menor energía',
-      'imin = min(range(len(resultados)), key=lambda k: resultados[k][1])',
-      `${nombre}.set_geometry(geometrias[imin])`,
-      `${nombre}.update_geometry()`,
-      `E, wfn = energy('${metodo}', return_wfn=True)`,
     ];
   }
 
-  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null, molden = false }) {
+  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null }) {
     const nombre = String(titulo).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'molecula';
     const ref = Number(multiplicidad) === 1 ? 'rhf' : 'uhf';
     const llamadas = {
@@ -479,6 +522,7 @@
         `E, wfn = energy('${metodo}', return_wfn=True)`,
       ],
       scan: tarea === 'scan' ? lineasScan(nombre, metodo, xyz, scan) : [],
+      congelar: tarea === 'congelar' ? lineasCongelar(nombre, metodo, xyz, scan) : [],
     }[tarea];
     const lineasXYZ = String(xyz).trim().split(/\r?\n/).map((l) => {
       const [el, x, y, z] = l.trim().split(/\s+/);
@@ -512,9 +556,9 @@
       ...llamadas,
       '',
       "oeprop(wfn, 'DIPOLE', 'MULLIKEN_CHARGES', title='SCF')",
-      ...(molden ? ['', '# Función de onda en formato Molden para IboView (que construye los orbitales intrínsecos de enlace, IBO)',
-        "molden(wfn, 'orbitales.molden')",
-        ...(tarea === 'irc' ? ['# El servidor escribe además un .molden por punto del IRC (irc_iboview.zip) para animarlo en IboView'] : [])] : []),
+      '', '# Función de onda en formato Molden para IboView (que construye los orbitales intrínsecos de enlace, IBO)',
+      "molden(wfn, 'orbitales.molden')",
+      ...(tarea === 'irc' ? ['# El servidor escribe además un .molden por punto del IRC (irc_001.molden…) para animarlo en IboView'] : []),
       ...(mep ? ['', "# Superficies para visualizar (HOMO, LUMO, densidad y potencial electrostático)", "set cubeprop_tasks ['orbitals', 'esp']", 'cubeprop(wfn)'] : []),
       '',
     ].join('\n');

@@ -56,14 +56,27 @@ el potencial electrostático y las vibraciones.
      CSV/XYZ. «Usar átomos de «Medir»» copia los átomos elegidos en el visor. Se lee de un .in
      con `fixed_/frozen_/ranged_distance|bend|dihedral` y un bucle `for` (lista, `np.arange`,
      `np.linspace`).
-   - **Archivos para IboView** (casilla «Orbitales para IboView», activa por defecto): cada cálculo
-     escribe `orbitales.molden` (función de onda SCF/KS en formato Molden con `psi4.molden`);
-     IboView construye con ella los orbitales intrínsecos de enlace (IBO). Con MP2 de capa cerrada,
-     además `naturales.molden` (orbitales naturales de la densidad MP2 relajada). En un IRC se
-     escribe un `.molden` por punto (`irc_001…`, reactivo → TS → producto) en `irc_iboview.zip`,
-     con `irc.xyz` y `LEAME.txt`: se abren todos a la vez en IboView como cuadros de una
-     trayectoria para seguir el flujo de electrones del mecanismo. Los coeficientes cumplen
-     CᵀSC = I con la convención estándar de Molden (comprobado en bases cartesianas y esféricas).
+   - **Coordenada congelada (sin scan)**: en el mismo recuadro, «Congelar en un valor» fija una
+     distancia, un ángulo o un diedro en el valor indicado (propone el valor actual) y hace una
+     sola optimización del resto de la molécula (tarea `congelar`). El valor se coloca igual que en
+     el scan (el último átomo se mueve con lo que cuelga de él) y se congela con `frozen_*`; no
+     hay optimización previa sin restricciones. El .out termina con «OPTIMIZACIÓN CON …
+     CONGELADA». Se lee de un .in con `frozen_*`/`fixed_*` y sin bucle (valor de `colocar(…)`, de
+     `fixed_*` o el de la geometría).
+   - **Función de onda en formato Molden, siempre**: cada cálculo escribe `orbitales.molden`
+     (SCF/KS, con `psi4.molden`) y el resumen tiene «Descargar .molden». IboView construye con
+     ella los orbitales intrínsecos de enlace (IBO). Con MP2 de capa cerrada, además
+     `naturales.molden` (orbitales naturales de la densidad MP2 relajada).
+   - **Un .molden por punto en IRC y scan**: `molden/irc_001.molden…` (reactivo → TS → producto)
+     o `molden/scan_001.molden…` (orden del scan), más `irc_iboview.zip` / `scan_iboview.zip`
+     con un .xyz de varios cuadros y `LEAME.txt`. Al terminar un IRC o un scan que se estaba
+     siguiendo, la página pide un **nombre base** y una **carpeta** (File System Access API:
+     Chrome/Edge) y escribe `base_001.molden`, `base_002.molden`…; si la carpeta ya tiene esos
+     nombres, pide confirmación. En navegadores sin esa API se descargan con esos nombres en la
+     carpeta de descargas. El botón «Guardar … .molden numerados…» repite el proceso. En IboView se
+     abren todos a la vez como cuadros de una trayectoria para seguir el flujo de electrones. Los
+     coeficientes cumplen CᵀSC = I con la convención estándar de Molden (comprobado en bases
+     cartesianas y esféricas).
    - **El servidor no ejecuta el código Python de un .in** (seguridad): interpreta la molécula,
      el nivel de teoría y el tipo de cálculo, y avisa si el archivo trae código que no se ejecuta.
 4. **Resultados**:
@@ -155,7 +168,7 @@ Luego abra http://localhost:3000.
 | POST | `/api/calculos` | `{xyz, metodo, base, tarea, carga, multiplicidad, mep, titulo}` → crea un cálculo |
 | GET | `/api/calculos/:id` | Estado, salida en vivo y resultado |
 | DELETE | `/api/calculos/:id` | Cancela un cálculo (sólo la misma IP) |
-| GET | `/api/calculos/:id/archivo/:nombre` | `salida.dat` (se guarda como .out), `entrada.in`, `geometria.xyz`, `homo.cube`, `lumo.cube`, `densidad.cube`, `mep.cube` |
+| GET | `/api/calculos/:id/archivo/:nombre` | `salida.dat` (se guarda como .out), `entrada.in`, `geometria.xyz`, `homo.cube`, `lumo.cube`, `densidad.cube`, `mep.cube`, `orbitales.molden`, `naturales.molden`, `irc_###.molden` / `scan_###.molden` (uno por punto), `irc_iboview.zip`, `scan_iboview.zip` |
 
 Si `CLAVE_ACCESO` está definida, las rutas `/api/*` (salvo `/api/opciones`) exigen la cabecera `x-clave-acceso`.
 

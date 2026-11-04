@@ -66,6 +66,7 @@ const TAREAS = [
   { id: 'ts', nombre: 'Estado de transición (TS) + frecuencias' },
   { id: 'irc', nombre: 'Camino de reacción IRC (desde un TS)' },
   { id: 'scan', nombre: 'Scan relajado (distancia, ángulo o diedro)' },
+  { id: 'congelar', nombre: 'Optimización con una coordenada congelada' },
 ];
 
 // Opciones del scan relajado: tipo, 2/3/4 átomos (desde 1) y hasta 40 valores dentro de un rango razonable
@@ -74,7 +75,7 @@ const SCAN = {
   angulo: { natom: 3, min: 20, max: 179, nombre: 'ángulos', unidad: '°' },
   diedro: { natom: 4, min: -360, max: 360, nombre: 'diedros', unidad: '°' },
 };
-function opcionesScan(o = {}, natomos = 0) {
+function opcionesScan(o = {}, natomos = 0, congelar = false) {
   const tipo = SCAN[o.tipo] ? o.tipo : 'distancia';
   const c = SCAN[tipo];
   const atomos = (Array.isArray(o.atomos) ? o.atomos : []).slice(0, c.natom).map((a) => Math.round(Number(a)));
@@ -82,6 +83,7 @@ function opcionesScan(o = {}, natomos = 0) {
     throw new Error(`Scan de ${tipo}: indique ${c.natom} átomos distintos entre 1 y ${natomos}.`);
   }
   const valores = (Array.isArray(o.valores) ? o.valores : []).map(Number).filter(Number.isFinite);
+  if (congelar && valores.length !== 1) throw new Error('Coordenada congelada: indique un solo valor.');
   if (valores.length < 1 || valores.length > 40) throw new Error(`Scan: se necesitan entre 1 y 40 ${c.nombre}.`);
   if (valores.some((v) => v < c.min || v > c.max)) throw new Error(`Scan: los ${c.nombre} deben estar entre ${c.min} y ${c.max} ${c.unidad}.`);
   return { tipo, atomos, valores: valores.map((v) => Math.round(v * 10000) / 10000) };
@@ -101,7 +103,9 @@ const Z = Object.fromEntries(
 );
 const { generarEntradaPsi4 } = require('./public/entrada.js');
 const ARCHIVOS_PERMITIDOS = new Set(['salida.dat', 'entrada.in', 'geometria.xyz', 'homo.cube', 'lumo.cube', 'densidad.cube', 'mep.cube',
-  'orbitales.molden', 'naturales.molden', 'irc_iboview.zip']); // los .molden y el .zip son para IboView
+  'orbitales.molden', 'naturales.molden', 'irc_iboview.zip', 'scan_iboview.zip']); // los .molden y los .zip son para IboView
+// Un .molden por punto de un IRC o de un scan (carpeta molden/ del trabajo)
+const MOLDEN_PUNTO = /^(irc|scan)_\d{3}\.molden$/;
 
 // ---------- Estado de los trabajos ----------
 /** @type {Map<string, any>} */
@@ -393,7 +397,7 @@ app.post('/api/calculos', async (req, res) => {
     const id = crypto.randomUUID();
     const titulo = String(b.titulo || 'molécula').replace(/[^\p{L}\p{N} ()\-_,.+=#]/gu, '').slice(0, 80) || 'molécula';
     const irc = tarea.id === 'irc' ? opcionesIRC(b.irc) : undefined;
-    const scan = tarea.id === 'scan' ? opcionesScan(b.scan, g.natomos) : undefined;
+    const scan = ['scan', 'congelar'].includes(tarea.id) ? opcionesScan(b.scan, g.natomos, tarea.id === 'congelar') : undefined;
     const t = {
       id, estado: 'en_cola', creado: ahora(), ip,
       titulo, formula: String(b.formula || '').slice(0, 60), smiles: String(b.smiles || '').slice(0, 500),
@@ -402,12 +406,12 @@ app.post('/api/calculos', async (req, res) => {
     await fsp.mkdir(carpetaDe(id), { recursive: true });
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.json'), JSON.stringify({
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      mep: b.mep !== false, molden: b.molden !== false, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan,
+      mep: b.mep !== false, molden: true, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan,
     }));
     // Entrada .in equivalente, para descargarla y ejecutarla con Psi4 fuera del servidor
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), generarEntradaPsi4({
       titulo, xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
-      memoria: CONFIG.memoria, mep: b.mep !== false, molden: b.molden !== false, irc, scan,
+      memoria: CONFIG.memoria, mep: b.mep !== false, molden: true, irc, scan,
     }));
     trabajos.set(id, t);
     await guardarMeta(t);
@@ -463,8 +467,9 @@ app.get('/api/calculos/:id/archivo/:nombre', (req, res) => {
   const t = buscar(req, res);
   if (!t) return;
   const nombre = req.params.nombre;
-  if (!ARCHIVOS_PERMITIDOS.has(nombre)) return res.status(404).json({ error: 'Archivo no disponible.' });
-  const ruta = path.join(carpetaDe(t.id), nombre);
+  const porPunto = MOLDEN_PUNTO.test(nombre);
+  if (!porPunto && !ARCHIVOS_PERMITIDOS.has(nombre)) return res.status(404).json({ error: 'Archivo no disponible.' });
+  const ruta = path.join(carpetaDe(t.id), ...(porPunto ? ['molden', nombre] : [nombre]));
   if (!fs.existsSync(ruta)) return res.status(404).json({ error: 'Archivo no disponible.' });
   res.type(nombre.endsWith('.zip') ? 'application/zip' : 'text/plain; charset=utf-8');
   if (req.query.descargar) res.attachment(`${t.titulo.replace(/\s+/g, '_')}_${nombre}`);

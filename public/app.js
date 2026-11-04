@@ -84,7 +84,7 @@ async function cargarOpciones() {
     estado.opciones = o;
     sel('#metodo', o.metodos, 'b3lyp');
     sel('#base', o.bases, '6-31g*');
-    sel('#tarea', o.tareas.filter((t) => t.id !== 'scan'), 'optimizacion'); // el scan se elige con sus casillas
+    sel('#tarea', o.tareas.filter((t) => t.id !== 'scan' && t.id !== 'congelar'), 'optimizacion'); // el scan y la coordenada congelada se eligen con sus casillas
     const es = $('#estadoServidor');
     es.textContent = o.psi4 ? `Psi4 ${o.psi4} · ${o.hilos} hilos` : 'Servidor activo (Psi4 cargando…)';
     es.className = 'estado-servidor ok';
@@ -116,6 +116,7 @@ function actualizarEstimacion() {
     energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1),
     irc: dirs * ((metodo === 'hf' ? 5 : 3 * (n || 1)) + 4 * puntosIrc),
     scan: 6 * (opcionesScanForm(true).valores.length || 1), // una optimización corta por punto
+    congelar: 10,
   }[tarea] || 1;
   actualizarInfoScan();
   if (!pesados) { $('#estimacion').textContent = ''; return; }
@@ -623,7 +624,7 @@ function ponerFormulario(datos, tituloPorDefecto = '') {
   $('#multiplicidad').value = datos.multiplicidad;
   $('#metodo').value = datos.metodo;
   $('#base').value = datos.base;
-  if (datos.tarea === 'scan' && datos.scan) ponerScanEnFormulario(datos.scan);
+  if ((datos.tarea === 'scan' || datos.tarea === 'congelar') && datos.scan) ponerScanEnFormulario(datos.scan, datos.tarea === 'congelar');
   else {
     $$('.scan-tipo').forEach((c) => { c.checked = false; });
     estado.scanEditor = null;
@@ -636,7 +637,6 @@ function ponerFormulario(datos, tituloPorDefecto = '') {
   }
   mostrarOpcionesIRC();
   if (datos.mep) $('#mep').checked = true;
-  if (datos.molden) $('#molden').checked = true;
 }
 
 async function abrirArchivo(archivo) {
@@ -653,7 +653,7 @@ async function abrirArchivo(archivo) {
       texto = generarEntradaPsi4({
         titulo: x.titulo || archivo.name.replace(/\.[^.]+$/, ''), xyz: x.xyz, carga: 0, multiplicidad: 1,
         metodo: $('#metodo').value || 'b3lyp', base: $('#base').value || '6-31g*', tarea: tareaEfectiva() || 'energia',
-        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, molden: $('#molden').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true),
+        memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(), scan: opcionesScanForm(true),
       });
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
     }
@@ -676,11 +676,13 @@ const SCAN_UI = {
   diedro: { natom: 4, simbolo: 'φ', unidad: '°', paso: 15, min: -360, max: 360, nombre: 'diedro' },
 };
 const tipoScan = () => $('.scan-tipo:checked')?.value || null;
-// Con una casilla de scan marcada, el cálculo es un scan (cada punto, una optimización restringida)
-const tareaEfectiva = () => (tipoScan() ? 'scan' : $('#tarea').value);
+const modoCoordenada = () => $('input[name="scanModo"]:checked')?.value || 'scan';
+// Con una casilla marcada, el cálculo es un scan (cada punto, una optimización restringida) o una
+// sola optimización con la coordenada congelada en un valor
+const tareaEfectiva = () => (tipoScan() ? (modoCoordenada() === 'congelar' ? 'congelar' : 'scan') : $('#tarea').value);
 const CAMPOS_ATOMOS = ['#scanI', '#scanJ', '#scanK', '#scanL'];
 const atomosScanForm = () => CAMPOS_ATOMOS.slice(0, SCAN_UI[tipoScan() || 'distancia'].natom).map((s) => parseInt($(s).value, 10));
-const firmaScan = () => [tipoScan(), ...CAMPOS_ATOMOS, '#scanDesde', '#scanHasta', '#scanPaso'].map((s) => (s && s.startsWith('#') ? $(s).value : s)).join('|');
+const firmaScan = () => [tipoScan(), modoCoordenada(), ...CAMPOS_ATOMOS, '#scanDesde', '#scanHasta', '#scanPaso', '#scanValor'].map((s) => (s && s.startsWith('#') ? $(s).value : s)).join('|');
 
 // Valor actual de la coordenada (distancia, ángulo o diedro) en la geometría cargada
 function valorActualScan(tipo, atomos) {
@@ -695,6 +697,14 @@ function opcionesScanForm(silencioso = false) {
   const tipo = tipoScan() || 'distancia';
   const c = SCAN_UI[tipo];
   const atomos = atomosScanForm();
+  if (modoCoordenada() === 'congelar') {
+    const v = parseFloat($('#scanValor').value);
+    if (!Number.isFinite(v)) {
+      if (silencioso) return { tipo, atomos, valores: [] };
+      throw new Error(`Coordenada congelada: indique el valor (${c.unidad}).`);
+    }
+    return { tipo, atomos, valores: [+v.toFixed(4)] };
+  }
   if (estado.scanEditor && estado.scanEditor.firma === firmaScan()) return { tipo, atomos, valores: estado.scanEditor.valores };
   const desde = parseFloat($('#scanDesde').value); const hasta = parseFloat($('#scanHasta').value);
   const paso = Math.abs(parseFloat($('#scanPaso').value)) || c.paso;
@@ -716,10 +726,18 @@ function rangoInicialScan(tipo, v) {
   return a + 360 <= 360 ? [a, a + 360] : [a - 360, a];
 }
 
-function ponerScanEnFormulario(scan) {
+function ponerScanEnFormulario(scan, congelar = false) {
   $$('.scan-tipo').forEach((c) => { c.checked = c.value === scan.tipo; });
+  $$('input[name="scanModo"]').forEach((r) => { r.checked = r.value === (congelar ? 'congelar' : 'scan'); });
   scan.atomos.forEach((a, k) => { $(CAMPOS_ATOMOS[k]).value = a; });
   const v = scan.valores;
+  if (congelar) {
+    $('#scanValor').value = v[0];
+    delete $('#scanValor').dataset.auto;
+    estado.scanEditor = null;
+    actualizarScanUI();
+    return;
+  }
   $('#scanDesde').value = v[0]; $('#scanHasta').value = v[v.length - 1];
   if (v.length > 1) $('#scanPaso').value = +Math.abs(v[1] - v[0]).toFixed(4);
   estado.scanEditor = { valores: v, firma: firmaScan() }; // conserva listas no uniformes del .in
@@ -732,7 +750,7 @@ function elegirTipoScan(casilla) {
   const tipo = tipoScan();
   estado.scanEditor = null;
   if (tipo) {
-    $('#scanDesde').value = ''; $('#scanHasta').value = '';
+    $('#scanDesde').value = ''; $('#scanHasta').value = ''; $('#scanValor').value = '';
     $('#scanPaso').value = SCAN_UI[tipo].paso;
     const sel = estado.seleccion || [];
     if (sel.length === SCAN_UI[tipo].natom) sel.forEach((i, k) => { $(CAMPOS_ATOMOS[k]).value = i + 1; });
@@ -750,7 +768,7 @@ function scanDesdeMedida() {
   }
   $$('.scan-tipo').forEach((c) => { c.checked = c.value === tipo; });
   sel.forEach((i, k) => { $(CAMPOS_ATOMOS[k]).value = i + 1; });
-  $('#scanDesde').value = ''; $('#scanHasta').value = '';
+  $('#scanDesde').value = ''; $('#scanHasta').value = ''; $('#scanValor').value = '';
   $('#scanPaso').value = SCAN_UI[tipo].paso;
   estado.scanEditor = null;
   actualizarScanUI();
@@ -760,7 +778,11 @@ function scanDesdeMedida() {
 function actualizarScanUI() {
   const tipo = tipoScan();
   $('#scanCampos').hidden = !tipo;
+  $('#scanModo').hidden = !tipo;
   $('#scanInfo').hidden = !tipo;
+  const congelar = modoCoordenada() === 'congelar';
+  $$('.solo-scan').forEach((el) => { el.hidden = congelar; });
+  $$('.solo-congelar').forEach((el) => { el.hidden = !congelar; });
   $('#tarea').disabled = !!tipo;
   $$('.solo-irc').forEach((el) => { el.hidden = tareaEfectiva() !== 'irc'; });
   if (!tipo) return;
@@ -773,11 +795,24 @@ function actualizarScanUI() {
   $('#scanKTexto').textContent = tipo === 'angulo' ? 'Átomo k (se mueve)' : 'Átomo k (gira su lado)';
   $$('.scan-u').forEach((u) => { u.textContent = c.unidad; });
   const actual = valorActualScan(tipo, atomosScanForm());
-  if (actual && !$('#scanDesde').value && !$('#scanHasta').value) {
+  if (actual && !congelar && !$('#scanDesde').value && !$('#scanHasta').value) {
     [$('#scanDesde').value, $('#scanHasta').value] = rangoInicialScan(tipo, actual.v);
+  }
+  // El valor propuesto (el actual) sigue a los átomos elegidos mientras no se escriba a mano
+  const campoValor = $('#scanValor');
+  if (actual && congelar && (!campoValor.value || campoValor.dataset.auto)) {
+    campoValor.value = +actual.v.toFixed(tipo === 'distancia' ? 3 : 1);
+    campoValor.dataset.auto = '1';
   }
   const fmt = (v) => (tipo === 'distancia' ? `${v.toFixed(3)} Å` : `${v.toFixed(1)}°`);
   let txt = actual ? `${c.simbolo}(${actual.etq}) actual = ${fmt(actual.v)}. ` : `Elija ${c.natom} átomos distintos entre 1 y ${nat || '?'} (active «Etiquetas» o use «📏 Medir» en el visor para ver la numeración). `;
+  if (congelar) {
+    const v = parseFloat($('#scanValor').value);
+    if (Number.isFinite(v) && (v < c.min || v > c.max)) txt += `⚠ El valor debe estar entre ${c.min} y ${c.max} ${c.unidad}. `;
+    txt += `Se coloca ${tipo === 'distancia' ? 'la' : 'el'} ${c.nombre} en el valor indicado (el último átomo se mueve con todo lo que cuelga de él), se congela y se optimiza el resto de la molécula: una sola optimización, sin scan. Reemplaza al «Tipo de cálculo».`;
+    $('#scanInfo').textContent = txt;
+    return;
+  }
   try {
     const o = opcionesScanForm();
     txt += `${o.valores.length} punto(s): ${o.valores.slice(0, 7).join(', ')}${o.valores.length > 7 ? ', …' : ''} ${c.unidad}${o.recortado ? ' (máximo 40 puntos)' : ''}. `;
@@ -813,8 +848,8 @@ function codigoDesdeFormulario() {
   const texto = generarEntradaPsi4({
     titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
     metodo: $('#metodo').value, base: $('#base').value, tarea,
-    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, molden: $('#molden').checked, irc: opcionesIRCForm(),
-    scan: tarea === 'scan' ? opcionesScanForm() : null,
+    memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
+    scan: tarea === 'scan' || tarea === 'congelar' ? opcionesScanForm() : null,
   });
   return { texto, nombre: `${nombreSeguro(titulo)}.in` };
 }
@@ -955,6 +990,10 @@ async function guardarArchivoTrabajo(cual) {
       descargar(await api(`/api/calculos/${t.id}/archivo/naturales.molden`), `${nombre}_naturales_MP2.molden`);
     } else if (cual === 'ibo-irc') {
       await descargarBinario(`/api/calculos/${t.id}/archivo/irc_iboview.zip`, `${nombre}_IRC_IboView.zip`);
+    } else if (cual === 'ibo-scan') {
+      await descargarBinario(`/api/calculos/${t.id}/archivo/scan_iboview.zip`, `${nombre}_scan_IboView.zip`);
+    } else if (cual === 'molden-puntos') {
+      abrirDialogoMolden();
     }
   } catch (e) {
     alert(e.message);
@@ -972,13 +1011,12 @@ async function lanzarCalculo() {
     metodo: $('#metodo').value, base: $('#base').value, tarea: tareaEfectiva(),
     carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
     mep: $('#mep').checked,
-    molden: $('#molden').checked,
     irc: tareaEfectiva() === 'irc' ? opcionesIRCForm() : undefined,
-    scan: tareaEfectiva() === 'scan' ? opcionesScanForm() : undefined,
+    scan: ['scan', 'congelar'].includes(tareaEfectiva()) ? opcionesScanForm() : undefined,
   };
   const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
   // En un IRC los enlaces cambian a lo largo del camino: no se fijan los del dibujo
-  if (g.molblock && !['irc', 'scan'].includes(cuerpo.tarea)) estado.molblocks.set(t.id, g.molblock);
+  if (g.molblock && !['irc', 'scan', 'congelar'].includes(cuerpo.tarea)) estado.molblocks.set(t.id, g.molblock);
   guardarEnHistorial(t);
   seguir(t.id);
   return t;
@@ -1018,6 +1056,7 @@ function seguir(id) {
   estado.reloj = setInterval(cronometro, 1000);
   sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
 
+  let vioCalcular = false; // sólo si el trabajo terminó mientras se seguía (no al abrir uno viejo)
   const ciclo = async () => {
     if (token !== estado.token) return;
     let t;
@@ -1035,6 +1074,7 @@ function seguir(id) {
     actualizarHistorial(t);
     $('#cancelar').hidden = !(t.estado === 'en_cola' || t.estado === 'ejecutando');
     if (t.estado === 'en_cola' || t.estado === 'ejecutando') {
+      vioCalcular = true;
       estado.inicio = t.inicio ? Date.parse(t.inicio) : null;
       $('#etapa').textContent = t.estado === 'en_cola' ? `En cola${t.posicion_cola ? ` (posición ${t.posicion_cola})` : ''}` : (t.etapa || 'Calculando');
       if (t.registro) {
@@ -1048,8 +1088,10 @@ function seguir(id) {
       setTimeout(ciclo, 2000);
     } else {
       finSeguimiento();
-      if (t.estado === 'terminado' && t.resultado) mostrarResultado(t);
-      else mostrarError(t);
+      if (t.estado === 'terminado' && t.resultado) {
+        mostrarResultado(t);
+        if (vioCalcular && t.resultado.iboview?.puntos_molden?.length) abrirDialogoMolden({ alTerminar: true });
+      } else mostrarError(t);
     }
   };
   ciclo();
@@ -1266,9 +1308,18 @@ function panelResumen(t, r) {
   let html = `<div class="grupo-btn barra-guardar">
     <button class="btn sec chico" type="button" data-guardar="out">Guardar salida (.out)</button>
     <button class="btn sec chico" type="button" data-guardar="in">Guardar entrada (.in)</button>
+    ${r.iboview?.orbitales ? '<button class="btn sec chico" type="button" data-guardar="molden" title="Función de onda en formato Molden (IboView, Avogadro, Jmol…)">Descargar .molden</button>' : ''}
+    ${r.iboview?.puntos_molden?.length ? `<button class="btn chico" type="button" data-guardar="molden-puntos" title="Un .molden por punto, con un nombre base y numeración en la carpeta que elija">Guardar ${r.iboview.puntos_molden.length} .molden numerados…</button>` : ''}
     ${r.tarea === 'ts' && f?.n_imaginarias === 1 ? '<button class="btn chico" type="button" id="lanzarIRC" title="Sigue el camino de mínima energía desde este TS hacia reactivos y productos">Calcular IRC desde este TS</button>' : ''}
   </div><div class="cifras">`;
-  html += cifra({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan' }[r.tarea] || 'Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  html += cifra({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: 'Energía (coordenada congelada)' }[r.tarea] || 'Energía total', `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  const cg = r.congelado;
+  if (cg) {
+    const dec = cg.unidad === 'Å' ? 3 : 1;
+    const nombreTipo = { distancia: 'Distancia congelada', angulo: 'Ángulo congelado', diedro: 'Diedro congelado' }[cg.tipo] || 'Coordenada congelada';
+    html += cifra(nombreTipo, `${cg.simbolo}(${esc(cg.etiqueta)}) = ${fx(cg.valor_final, dec)} ${cg.unidad}`,
+      `pedido ${fx(cg.valor, dec)} ${cg.unidad} · ${cg.convergio ? (cg.nota ? esc(cg.nota) : 'optimización convergida') : `no convergió${cg.nota ? `: ${esc(cg.nota)}` : ''}`}`);
+  }
   const sc = r.scan;
   if (sc) {
     const S = sc.simbolo || 'R'; const U = sc.unidad || 'Å'; const dec = U === 'Å' ? 3 : 1;
@@ -1662,7 +1713,7 @@ async function calcularFrecuencias(boton) {
         xyz: r.geometria_xyz, formula: t.formula, smiles: t.smiles || '',
         titulo: `${t.titulo} (frecuencias)`.slice(0, 80),
         metodo: r.metodo, base: r.base, tarea: 'frecuencias',
-        carga: r.carga, multiplicidad: r.multiplicidad, mep: (r.cubos || []).includes('mep'), molden: $('#molden').checked,
+        carga: r.carga, multiplicidad: r.multiplicidad, mep: (r.cubos || []).includes('mep'),
       }),
     });
     guardarEnHistorial(nuevo);
@@ -1774,7 +1825,8 @@ function panelIRC(t, r) {
       <button class="btn sec chico" type="button" id="reproducirOpt">▶ Reproducir reacción</button>
       <label>Punto <input type="range" id="pasoOpt" min="0" max="${pts.length - 1}" value="${Math.max(its, 0)}"></label>
       <button class="btn sec chico" type="button" id="bajarIRC" title="Todos los puntos del camino como XYZ de varios cuadros (Avogadro, Jmol, VMD)">IRC como XYZ animado</button>
-      ${r.iboview?.irc_zip ? '<button class="btn chico" type="button" data-guardar="ibo-irc" title="Un .molden por punto del IRC para animar los IBO en IboView">IRC para IboView (.zip)</button>' : ''}
+      ${r.iboview?.puntos_molden?.length ? '<button class="btn chico" type="button" data-guardar="molden-puntos" title="Un .molden por punto del IRC, con nombre base y numeración, en la carpeta que elija">Guardar .molden numerados…</button>' : ''}
+      ${r.iboview?.irc_zip ? '<button class="btn sec chico" type="button" data-guardar="ibo-irc" title="Un .molden por punto del IRC para animar los IBO en IboView">IRC para IboView (.zip)</button>' : ''}
       <span id="infoPaso" class="nota"></span>
     </div>
     <p class="nota">${pts.length} puntos del camino de mínima energía (coordenadas ponderadas por masa). El TS está en s = 0; los extremos se acercan a los mínimos de reactivos y productos. Para energías exactas de reactivos y productos, optimice la geometría de cada extremo.</p>`;
@@ -1854,6 +1906,7 @@ function panelScan(t, r) {
   panel.innerHTML = `${svg}
     <div class="controles-fila">
       <button class="btn sec chico" type="button" id="reproducirOpt">▶ Reproducir scan</button>
+      ${r.iboview?.puntos_molden?.length ? '<button class="btn chico" type="button" data-guardar="molden-puntos" title="Un .molden por punto del scan, con nombre base y numeración, en la carpeta que elija">Guardar .molden numerados…</button>' : ''}
       <label>Punto <input type="range" id="pasoOpt" min="0" max="${pts.length - 1}" value="0"></label>
       <button class="btn sec chico" type="button" id="bajarScanCSV">Tabla CSV</button>
       <button class="btn sec chico" type="button" id="bajarScanXYZ" title="Todas las geometrías del scan como XYZ de varios cuadros (Avogadro, Jmol, VMD)">XYZ animado</button>
@@ -1924,7 +1977,7 @@ async function calcularIRC(boton) {
         xyz: r.geometria_xyz, formula: t.formula, smiles: t.smiles || '',
         titulo: `${t.titulo} (IRC)`.slice(0, 80),
         metodo: r.metodo, base: r.base, tarea: 'irc', irc: opcionesIRCForm(),
-        carga: r.carga, multiplicidad: r.multiplicidad, mep: false, molden: $('#molden').checked,
+        carga: r.carga, multiplicidad: r.multiplicidad, mep: false,
       }),
     });
     guardarEnHistorial(nuevo);
@@ -1939,16 +1992,92 @@ async function calcularIRC(boton) {
 function bloqueIboView(r) {
   const ib = r.iboview;
   if (!ib) return r.aviso_iboview ? `<p class="nota">${esc(r.aviso_iboview)}</p>` : '';
-  return `<h3 class="sub-iboview">Para IboView (orbitales intrínsecos de enlace)</h3>
+  const nPuntos = ib.puntos_molden?.length || 0;
+  const delQue = ib.puntos_tipo === 'irc' ? 'del IRC' : 'del scan';
+  return `<h3 class="sub-iboview">Función de onda en formato Molden (IboView)</h3>
     <div class="grupo-btn">
-      <button class="btn sec" type="button" data-guardar="molden">Orbitales (.molden)</button>
+      <button class="btn sec" type="button" data-guardar="molden">Descargar .molden</button>
       ${ib.naturales ? '<button class="btn sec" type="button" data-guardar="naturales">Orbitales naturales MP2 (.molden)</button>' : ''}
-      ${ib.irc_zip ? `<button class="btn" type="button" data-guardar="ibo-irc">IRC para IboView (.zip, ${ib.irc_puntos} archivos .molden)</button>` : ''}
+      ${nPuntos ? `<button class="btn" type="button" data-guardar="molden-puntos">Guardar los ${nPuntos} .molden ${delQue} numerados…</button>` : ''}
+      ${ib.irc_zip ? `<button class="btn sec" type="button" data-guardar="ibo-irc">IRC para IboView (.zip, ${ib.irc_puntos} archivos .molden)</button>` : ''}
+      ${ib.scan_zip ? `<button class="btn sec" type="button" data-guardar="ibo-scan">Scan para IboView (.zip, ${nPuntos} archivos .molden)</button>` : ''}
     </div>
     <p class="nota">IboView lee la función de onda (base y orbitales) y construye él mismo los IBO a partir de los orbitales ocupados.
+    ${nPuntos ? `«Guardar … numerados» pide un nombre base y una carpeta y escribe base_001.molden … base_${String(nPuntos).padStart(3, '0')}.molden en el orden ${ib.puntos_tipo === 'irc' ? 'del camino (reactivo → TS → producto)' : 'del scan'}; ábralos todos a la vez en IboView para verlos como cuadros de una trayectoria.` : ''}
     ${ib.irc_zip ? 'Para el mecanismo: descomprima el .zip y abra en IboView <b>todos</b> los <code>irc_*.molden</code> a la vez; se cargan como cuadros de una trayectoria (reactivo → TS → producto) y los IBO se alinean entre cuadros, de modo que se ve el flujo de electrones. Las instrucciones están en <code>LEAME.txt</code>.' : ''}
     ${ib.naturales ? ' Los orbitales naturales MP2 vienen de la densidad MP2 relajada; sus ocupaciones (≈2, ≈0 y valores intermedios) indican la correlación electrónica.' : (r.metodo !== 'mp2' ? ' Con HF o DFT, los orbitales naturales coinciden con los canónicos (ocupaciones 2 y 0).' : '')}
     ${ib.aviso_naturales ? `<br>${esc(ib.aviso_naturales)}` : ''}</p>`;
+}
+
+// ---------- .molden numerados (IRC y scan): nombre base y carpeta ----------
+const nombreNumerado = (base, k, n) => `${base}_${String(k).padStart(Math.max(3, String(n).length), '0')}.molden`;
+function baseMolden() {
+  return $('#dlgMoldenBase').value.trim().replace(/\.molden$/i, '').replace(/[\\/:*?"<>|]+/g, '_').replace(/\s+/g, '_') || 'molden';
+}
+function vistaMolden() {
+  const n = estado.resultado?.iboview?.puntos_molden?.length || 0;
+  const b = baseMolden();
+  $('#dlgMoldenVista').textContent = n > 2 ? `${nombreNumerado(b, 1, n)}, ${nombreNumerado(b, 2, n)} … ${nombreNumerado(b, n, n)}` : [1, 2].slice(0, n).map((k) => nombreNumerado(b, k, n)).join(', ');
+}
+function abrirDialogoMolden({ alTerminar = false } = {}) {
+  const t = estado.infoTrabajo; const ib = estado.resultado?.iboview;
+  const n = ib?.puntos_molden?.length || 0;
+  if (!t || !n) return;
+  const irc = ib.puntos_tipo === 'irc';
+  $('#dlgMoldenTexto').textContent = `${alTerminar ? `Terminó el ${irc ? 'IRC' : 'scan'} «${t.titulo}». ` : ''}Hay ${n} archivos .molden, uno por punto ${irc ? 'del IRC (reactivo → TS → producto)' : 'del scan, en su orden'}. Escriba el nombre base y elija la carpeta donde guardarlos con numeración secuencial.`;
+  $('#dlgMoldenBase').value = `${nombreSeguro(t.titulo)}_${irc ? 'irc' : 'scan'}`;
+  const conCarpeta = typeof window.showDirectoryPicker === 'function';
+  $('#dlgMoldenGuardar').textContent = conCarpeta ? 'Elegir carpeta y guardar' : `Descargar los ${n} archivos`;
+  $('#dlgMoldenNota').hidden = conCarpeta;
+  $('#dlgMoldenEstado').textContent = '';
+  $('#dlgMoldenGuardar').disabled = false;
+  vistaMolden();
+  const dlg = $('#dlgMolden');
+  if (!dlg.open) dlg.showModal();
+  $('#dlgMoldenBase').select();
+}
+async function guardarMoldenNumerados() {
+  const t = estado.infoTrabajo; const nombres = estado.resultado?.iboview?.puntos_molden || [];
+  const n = nombres.length;
+  if (!t || !n) return;
+  const base = baseMolden();
+  const boton = $('#dlgMoldenGuardar'); const info = $('#dlgMoldenEstado');
+  boton.disabled = true;
+  try {
+    let carpeta = null;
+    if (typeof window.showDirectoryPicker === 'function') {
+      try {
+        carpeta = await window.showDirectoryPicker({ id: 'psi4-molden', mode: 'readwrite' });
+      } catch (e) {
+        if (e.name === 'AbortError') return; // eligió «Cancelar»
+        throw e;
+      }
+      const existentes = [];
+      for (let k = 1; k <= n; k++) {
+        try { await carpeta.getFileHandle(nombreNumerado(base, k, n)); existentes.push(nombreNumerado(base, k, n)); } catch { /* no existe */ }
+      }
+      if (existentes.length && !confirm(`La carpeta «${carpeta.name}» ya tiene ${existentes.length} archivo(s) con ese nombre (p. ej. ${existentes[0]}). ¿Reemplazarlos?`)) return;
+    }
+    for (let k = 1; k <= n; k++) {
+      info.textContent = `Guardando ${k} de ${n}…`;
+      const texto = await api(`/api/calculos/${t.id}/archivo/${nombres[k - 1]}`);
+      const nombre = nombreNumerado(base, k, n);
+      if (carpeta) {
+        const archivo = await carpeta.getFileHandle(nombre, { create: true });
+        const w = await archivo.createWritable();
+        await w.write(texto);
+        await w.close();
+      } else {
+        descargar(texto, nombre);
+        await new Promise((ok) => { setTimeout(ok, 300); });
+      }
+    }
+    info.textContent = `✓ ${n} archivos guardados ${carpeta ? `en la carpeta «${carpeta.name}»` : 'en la carpeta de descargas'}: ${nombreNumerado(base, 1, n)} … ${nombreNumerado(base, n, n)}.`;
+  } catch (e) {
+    info.textContent = `No se pudieron guardar los archivos: ${e.message}`;
+  } finally {
+    boton.disabled = false;
+  }
 }
 
 function panelArchivos(t, r) {
@@ -2031,6 +2160,11 @@ function eventos() {
   ['input', 'change'].forEach((ev) => $('#formCalculo').addEventListener(ev, programarSincronizacion));
   $$('.scan-tipo').forEach((c) => c.addEventListener('change', () => elegirTipoScan(c)));
   $('#scanDeMedida').addEventListener('click', scanDesdeMedida);
+  $$('input[name="scanModo"]').forEach((r) => r.addEventListener('change', () => { actualizarScanUI(); actualizarEstimacion(); }));
+  $('#scanValor').addEventListener('input', (e) => { delete e.target.dataset.auto; actualizarEstimacion(); });
+  $('#dlgMoldenBase').addEventListener('input', vistaMolden);
+  $('#dlgMoldenForm').addEventListener('submit', (e) => { e.preventDefault(); guardarMoldenNumerados(); });
+  $('#dlgMoldenCerrar').addEventListener('click', () => $('#dlgMolden').close());
   $('#abrirArchivo').addEventListener('click', () => $('#archivoEntrada').click());
   $('#archivoEntrada').addEventListener('change', (e) => abrirArchivo(e.target.files[0]));
   const tarjeta = $('#tarjetaMolecula');

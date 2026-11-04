@@ -152,26 +152,31 @@
         </label>
         <p class="nota solo-irc nota-irc" hidden>El IRC parte de un <b>estado de transición</b> (una sola frecuencia imaginaria) y sigue el camino de mínima energía hacia reactivos y productos. Calcule antes el TS con «Estado de transición (TS) + frecuencias» y use su botón «Calcular IRC desde este TS».</p>
         <fieldset class="scan-caja" id="scanCaja">
-          <legend>Scan relajado <span class="info">(opcional · un solo tipo por cálculo)</span></legend>
+          <legend>Coordenada congelada o scan relajado <span class="info">(opcional · un solo tipo por cálculo)</span></legend>
           <div class="scan-tipos" role="group" aria-label="Tipo de scan">
             <label class="chk"><input type="checkbox" class="scan-tipo" value="distancia"> Distancia de enlace <span class="info">(2 átomos)</span></label>
             <label class="chk"><input type="checkbox" class="scan-tipo" value="angulo"> Ángulo de enlace <span class="info">(3 átomos)</span></label>
             <label class="chk"><input type="checkbox" class="scan-tipo" value="diedro"> Ángulo diedro <span class="info">(4 átomos)</span></label>
+          </div>
+          <div class="scan-modo" id="scanModo" role="radiogroup" aria-label="Qué hacer con la coordenada" hidden>
+            <label class="chk"><input type="radio" name="scanModo" value="congelar"> Congelar en un valor <span class="info">(una optimización, sin scan)</span></label>
+            <label class="chk"><input type="radio" name="scanModo" value="scan" checked> Scan relajado <span class="info">(varios valores)</span></label>
           </div>
           <div class="scan-campos" id="scanCampos" hidden>
             <label>Átomo i <input id="scanI" type="number" min="1" step="1" value="1"></label>
             <label><span id="scanJTexto">Átomo j</span> <input id="scanJ" type="number" min="1" step="1" value="2"></label>
             <label id="scanKCaja"><span id="scanKTexto">Átomo k</span> <input id="scanK" type="number" min="1" step="1" value="3"></label>
             <label id="scanLCaja">Átomo l <input id="scanL" type="number" min="1" step="1" value="4"></label>
-            <label>Desde (<span class="scan-u">Å</span>) <input id="scanDesde" type="number" step="any"></label>
-            <label>Hasta (<span class="scan-u">Å</span>) <input id="scanHasta" type="number" step="any"></label>
-            <label>Paso (<span class="scan-u">Å</span>) <input id="scanPaso" type="number" step="any" min="0.01" value="0.1"></label>
+            <label class="solo-congelar" hidden>Valor congelado (<span class="scan-u">Å</span>) <input id="scanValor" type="number" step="any"></label>
+            <label class="solo-scan">Desde (<span class="scan-u">Å</span>) <input id="scanDesde" type="number" step="any"></label>
+            <label class="solo-scan">Hasta (<span class="scan-u">Å</span>) <input id="scanHasta" type="number" step="any"></label>
+            <label class="solo-scan">Paso (<span class="scan-u">Å</span>) <input id="scanPaso" type="number" step="any" min="0.01" value="0.1"></label>
             <button class="btn sec chico" id="scanDeMedida" type="button" title="Copia los átomos seleccionados con «📏 Medir» en el visor 3D">Usar átomos de «Medir»</button>
           </div>
           <p class="nota" id="scanInfo" hidden></p>
         </fieldset>
         <label class="chk largo"><input type="checkbox" id="mep" checked> Calcular potencial electrostático (MEP)</label>
-        <label class="chk largo" title="Escribe la función de onda en formato Molden; IboView construye con ella los orbitales intrínsecos de enlace (IBO). En un IRC, un archivo por punto para animar el mecanismo."><input type="checkbox" id="molden" checked> Orbitales para IboView (.molden; en un IRC, uno por punto)</label>
+        <p class="nota largo">Cada cálculo guarda la función de onda en formato <b>Molden</b> (.molden), que IboView usa para construir los orbitales intrínsecos de enlace (IBO). En un IRC o un scan se escribe además un .molden por punto; al terminar, la página pide un nombre base y una carpeta para guardarlos numerados.</p>
       </form>
     </section>
 
@@ -246,6 +251,23 @@
       <ul class="historial" id="historial"></ul>
     </section>
   </main>
+
+  <dialog class="dialogo" id="dlgMolden" aria-labelledby="dlgMoldenTitulo">
+    <form class="dialogo-cuerpo" id="dlgMoldenForm">
+      <h2 id="dlgMoldenTitulo">Guardar los archivos .molden numerados</h2>
+      <p id="dlgMoldenTexto"></p>
+      <label>Nombre base de los archivos
+        <input id="dlgMoldenBase" type="text" maxlength="80" autocomplete="off" spellcheck="false">
+      </label>
+      <p class="nota">Se guardarán como <code id="dlgMoldenVista"></code></p>
+      <p class="nota" id="dlgMoldenNota" hidden>Este navegador no permite elegir una carpeta: los archivos se descargan en la carpeta de descargas (puede pedir permiso para descargar varios archivos a la vez). Con Chrome o Edge puede elegir la carpeta.</p>
+      <p class="dialogo-estado" id="dlgMoldenEstado" role="status"></p>
+      <div class="grupo-btn">
+        <button class="btn" type="submit" id="dlgMoldenGuardar">Elegir carpeta y guardar</button>
+        <button class="btn sec" type="button" id="dlgMoldenCerrar">Cerrar</button>
+      </div>
+    </form>
+  </dialog>
 
   <footer class="pie">
     Cálculos: <a href="https://psicode.org" target="_blank" rel="noopener">Psi4</a> ·

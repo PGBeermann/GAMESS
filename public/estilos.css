@@ -267,6 +267,17 @@ td.asig span { display: block; font-size: .8rem; color: var(--gris); }
 .grafico .punto.sin-converger.activo { fill: var(--rojo); }
 .aviso-chico { color: #b86e00; font-size: .8rem; font-weight: 600; }
 .sub-iboview { font-size: .95rem; margin: 16px 0 8px; }
+.scan-modo { display: flex; flex-wrap: wrap; gap: 4px 18px; margin: 8px 0 4px; }
+.dialogo { border: 1px solid var(--borde, #ccd); border-radius: 12px; padding: 0; max-width: min(560px, calc(100vw - 32px)); width: 100%; background: var(--tarjeta, #fff); color: inherit; box-shadow: 0 12px 40px rgba(0, 0, 0, .25); }
+.dialogo::backdrop { background: rgba(0, 0, 0, .35); }
+.dialogo-cuerpo { padding: 18px 20px; display: grid; gap: 10px; }
+.dialogo-cuerpo h2 { font-size: 1.05rem; margin: 0; }
+.dialogo-cuerpo p { margin: 0; }
+.dialogo-cuerpo label { display: grid; gap: 4px; font-weight: 600; }
+.dialogo-cuerpo input[type="text"] { font: inherit; padding: 6px 8px; }
+.dialogo-cuerpo code { word-break: break-all; }
+.dialogo-estado:empty { display: none; }
+.dialogo-estado { font-weight: 600; }
 .grafico .etq-ts { fill: var(--rojo); font-weight: 700; font-size: 12px; }
 .controles-fila { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin: 8px 0; font-size: .9rem; }
 .controles-fila label { display: flex; gap: 6px; align-items: center; }
