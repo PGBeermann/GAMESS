@@ -56,13 +56,22 @@ el potencial electrostático y las vibraciones.
      CSV/XYZ. «Usar átomos de «Medir»» copia los átomos elegidos en el visor. Se lee de un .in
      con `fixed_/frozen_/ranged_distance|bend|dihedral` y un bucle `for` (lista, `np.arange`,
      `np.linspace`).
-   - **Coordenada congelada (sin scan)**: en el mismo recuadro, «Congelar en un valor» fija una
-     distancia, un ángulo o un diedro en el valor indicado (propone el valor actual) y hace una
-     sola optimización del resto de la molécula (tarea `congelar`). El valor se coloca igual que en
-     el scan (el último átomo se mueve con lo que cuelga de él) y se congela con `frozen_*`; no
-     hay optimización previa sin restricciones. El .out termina con «OPTIMIZACIÓN CON …
-     CONGELADA». Se lee de un .in con `frozen_*`/`fixed_*` y sin bucle (valor de `colocar(…)`, de
-     `fixed_*` o el de la geometría).
+   - **Coordenadas congeladas (sin scan)**: en el mismo recuadro, «Congelar» fija una o varias
+     coordenadas a la vez (hasta 10: distancias, ángulos o diedros, mezclados) y hace **una sola
+     optimización** del resto de la molécula (tarea `congelar`). Es lo que en Psi4 antiguos se
+     escribía `fixed_distance "1 2 2.320  1 3 2.500  1 4 1.090"`.
+     - Una coordenada: elija los átomos y el valor (propone el actual).
+     - Varias: pulse «➕ Agregar a la lista» con cada una, o escríbalas en la lista, una por línea:
+       átomos y valor (`1 2 2.320` distancia, `2 1 4 90` ángulo, `1 2 3 4 180` diedro). Con la
+       lista llena, se congela lo que está en la lista.
+     Cada valor se coloca igual que en el scan (el último átomo se mueve con lo que cuelga de él;
+     varias pasadas, porque colocar uno puede mover a otro), todas se congelan juntas con
+     `frozen_distance` / `frozen_bend` / `frozen_dihedral` y se optimiza el resto; no hay
+     optimización previa sin restricciones. El resumen muestra cada coordenada (pedida y final) y el
+     .out termina con «OPTIMIZACIÓN CON N COORDENADAS CONGELADAS». Al leer un .in sin bucle se
+     toman todas las `fixed_*` (átomos + valor), `frozen_*` (valor de `colocar(…)`, de la lista
+     `congeladas = […]` o de la geometría) y `ranged_*` (centro del intervalo). En la API:
+     `"scan": {"restricciones": [{"tipo": "distancia", "atomos": [1, 2], "valor": 2.32}, …]}`.
    - **Solvente (PCM, PCMSolver)**: «Sin solvente (fase gaseosa)» por defecto, o uno de los 20
      solventes predefinidos de PCMSolver (agua, carbonato de propileno, DMSO, nitrometano,
      acetonitrilo, metanol, etanol, acetona, 1,2-dicloroetano, diclorometano, THF, anilina,

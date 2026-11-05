@@ -17,7 +17,7 @@
   const BASES = ['sto-3g', '3-21g', '6-31g', '6-31g*', '6-31g**', '6-31+g*', '6-311g**', 'cc-pvdz', 'aug-cc-pvdz', 'def2-svp', 'def2-tzvp'];
   // Opciones que no cambian el resultado químico (o que el servidor ya fija): se ignoran sin aviso
   const INOFENSIVAS = /^(scf_type|cubeprop_\w+|cubic_grid_\w+|print|maxiter|geom_maxiter|e_convergence|d_convergence|g_convergence|guess|puream|freeze_core|mp2_type|ints_tolerance|dft_\w+|num_threads|full_hess_every|step_type|hess_update|write_opt_history)$/;
-  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado', congelar: 'optimización con una coordenada congelada' };
+  const NOMBRE_TAREA = { energia: 'energía (punto simple)', optimizacion: 'optimización de geometría', frecuencias: 'optimización + frecuencias', ts: 'estado de transición (TS) + frecuencias', irc: 'camino de reacción IRC', scan: 'scan relajado', congelar: 'optimización con coordenadas congeladas' };
   const ELEMENTOS = new Set(('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr I').split(' '));
 
   // Solventes predefinidos de PCMSolver: id de la página, nombre y alias que acepta PCMSolver, ε estática
@@ -391,20 +391,9 @@
       const v = valoresDe(m[1], sinBloques);
       if (v) { valores = v; break; }
     }
-    if (!valores) {
-      // Sin bucle: una sola optimización con la coordenada congelada (en el valor de colocar(…),
-      // en el de fixed_/ranged_ o, si no hay ninguno, en el valor de la geometría)
-      const fijos = numeros(fichas.slice(c.natom).join(' '));
-      const colocar = /\bcolocar\s*\(\s*\w+\s*,\s*\[[^\]]*\]\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/.exec(sinBloques);
-      if (colocar) valores = [Number(colocar[1])];
-      else if (modo === 'fixed' && fijos.length) valores = [fijos[0]];
-      else if (modo === 'ranged' && fijos.length >= 2) valores = [(fijos[0] + fijos[1]) / 2];
-      else valores = [+medirPuntos(atomos.map((a) => filas[a - 1].slice(1, 4).map(Number))).toFixed(tipo === 'distancia' ? 4 : 2)];
-      if (valores[0] < c.min || valores[0] > c.max) throw new Error(`El valor de ${c.nombre} congelado debe estar entre ${c.min} y ${c.max} ${c.unidad} (leído: ${valores[0]}).`);
-      avisos.push(`Optimización con ${c.simbolo}(${etq}) congelada en ${valores[0]} ${c.unidad}: se coloca el valor (el último átomo se mueve con lo que cuelga de él), se congela con «${c.frozen}» y se optimiza el resto de la molécula.`);
-      if (modo === 'fixed') avisos.push(`«fixed_${r[2]}» no existe en Psi4 1.11 (optking 0.5): el servidor coloca el valor y lo congela con «${c.frozen}».`);
-      return { tipo, atomos, valores, congelar: true };
-    }
+    // Sin bucle (o con la lista «congeladas = […]» que genera esta aplicación): una sola optimización
+    // con todas las coordenadas congeladas a la vez
+    if (!valores || /^\s*congeladas\s*=\s*\[/m.test(sinBloques)) return leerCongeladas(textoResto, sinBloques, filas, avisos);
     if (valores.length > 40) {
       avisos.push(`El scan tenía ${valores.length} puntos: se usan los 40 primeros.`);
       valores = valores.slice(0, 40);
@@ -414,6 +403,64 @@
     if (modo === 'fixed') avisos.push(`«fixed_${r[2]}» no existe en Psi4 1.11 (optking 0.5): el servidor coloca cada valor y lo congela con «${c.frozen}», que da el mismo scan.`);
     avisos.push('El bucle y el resto del código Python del archivo (print_out, variables…) no se ejecutan tal cual: el servidor hace el scan equivalente y escribe la tabla en el .out.');
     return { tipo, atomos, valores };
+  }
+
+  const MAX_CONGELADAS = 10;
+  const TIPO_POR_NATOM = { 2: 'distancia', 3: 'angulo', 4: 'diedro' };
+  const claveCoordenada = (tipo, atomos) => {
+    const ida = atomos.join('-'); const vuelta = [...atomos].reverse().join('-'); // 1–2 y 2–1 son la misma
+    return `${tipo}:${ida < vuelta ? ida : vuelta}`;
+  };
+
+  // Coordenadas congeladas a la vez (una sola optimización): todas las fixed_/frozen_/ranged_ del
+  // archivo, p. ej. fixed_distance "1 2 2.320  1 3 2.500  1 4 1.090". El valor sale de fixed_ (el
+  // número tras los átomos), del centro de ranged_, de colocar(…)/congeladas = […] o, si no hay
+  // ninguno, de la geometría.
+  function leerCongeladas(textoResto, sinBloques, filas, avisos) {
+    const nat = filas.length;
+    // colocar(mol, [0, 1], 2.32) y congeladas = [([0, 1], 2.32), …] (átomos desde 0)
+    const colocados = new Map();
+    for (const m of sinBloques.matchAll(/\[\s*(\d+(?:\s*,\s*\d+){1,3})\s*\]\s*,\s*(-?\d+(?:\.\d+)?)\s*\)/g)) {
+      const atomos = numeros(m[1]).map((a) => a + 1);
+      colocados.set(claveCoordenada(TIPO_POR_NATOM[atomos.length], atomos), Number(m[2]));
+    }
+    const lista = new Map();
+    let conFixed = false;
+    for (const m of textoResto.matchAll(/(fixed|frozen|ranged)_(distance|bend|dihedral)['"]?\s*[:=]?\s*(?:\(\s*)?[fFrRbBuU]?["']([^"']*)["']/gi)) {
+      const modo = m[1].toLowerCase();
+      const tipo = { distance: 'distancia', bend: 'angulo', dihedral: 'diedro' }[m[2].toLowerCase()];
+      const c = SCAN_TIPOS[tipo];
+      const n = numeros(m[3]);
+      if (!n.length) continue; // p. ej. la línea que las libera: {'frozen_distance': ''}
+      const extra = modo === 'fixed' ? 1 : modo === 'ranged' ? 2 : 0;
+      const tam = c.natom + extra;
+      if (n.length % tam) {
+        throw new Error(`«${modo}_${m[2]}» necesita grupos de ${tam} números (${c.natom} átomos${extra === 1 ? ' y el valor' : extra === 2 ? ', mínimo y máximo' : ''}): «${m[3].trim()}»`);
+      }
+      for (let k = 0; k < n.length; k += tam) {
+        const atomos = n.slice(k, k + c.natom);
+        if (atomos.some((a) => !Number.isInteger(a) || a < 1 || a > nat) || new Set(atomos).size !== c.natom) {
+          throw new Error(`«${modo}_${m[2]}»: cada ${c.nombre} necesita ${c.natom} átomos distintos entre 1 y ${nat} (leído: ${atomos.join(' ')}).`);
+        }
+        const clave = claveCoordenada(tipo, atomos);
+        let valor = modo === 'fixed' ? n[k + c.natom] : modo === 'ranged' ? (n[k + c.natom] + n[k + c.natom + 1]) / 2 : colocados.get(clave);
+        if (valor === undefined) valor = medirPuntos(atomos.map((a) => filas[a - 1].slice(1, 4).map(Number)));
+        valor = +Number(valor).toFixed(4);
+        if (valor < c.min || valor > c.max) throw new Error(`El valor de ${c.nombre} congelado ${atomos.join('–')} debe estar entre ${c.min} y ${c.max} ${c.unidad} (leído: ${valor}).`);
+        if (modo === 'fixed') conFixed = true;
+        lista.set(clave, { tipo, atomos, valor });
+      }
+    }
+    const restricciones = [...lista.values()];
+    if (!restricciones.length) return null;
+    if (restricciones.length > MAX_CONGELADAS) throw new Error(`Hay ${restricciones.length} coordenadas congeladas: el máximo es ${MAX_CONGELADAS}.`);
+    const texto = restricciones.map((r) => {
+      const c = SCAN_TIPOS[r.tipo];
+      return `${c.simbolo}(${r.atomos.map((a) => `${filas[a - 1][0]}${a}`).join('–')}) = ${r.valor} ${c.unidad}`;
+    }).join(', ');
+    avisos.push(`Optimización con ${restricciones.length > 1 ? `${restricciones.length} coordenadas congeladas a la vez` : 'una coordenada congelada'}: ${texto}. Se coloca cada valor (el último átomo se mueve con lo que cuelga de él), se congelan juntas y se optimiza el resto en una sola optimización.`);
+    if (conFixed) avisos.push('«fixed_*» no existe en Psi4 1.11 (optking 0.5): el servidor coloca los valores y los congela con «frozen_*», que da el mismo resultado.');
+    return { restricciones, congelar: true };
   }
 
   function leerXYZ(texto) {
@@ -441,21 +488,49 @@
     return { tipo, c, atomos, etq, valores: scan?.valores || [] };
   }
 
-  // Optimización con una coordenada congelada en un valor (sin scan)
+  // Coordenadas congeladas del cálculo: { restricciones: [{ tipo, atomos, valor }] } o la forma
+  // antigua de una sola coordenada { tipo, atomos, valores: [v] }
+  function restriccionesDe(scan) {
+    if (Array.isArray(scan?.restricciones) && scan.restricciones.length) return scan.restricciones;
+    return [{ tipo: scan?.tipo, atomos: scan?.atomos, valor: scan?.valores?.[0] }];
+  }
+
+  // Una sola optimización con una o varias coordenadas congeladas a la vez (lo que en Psi4 antiguos
+  // era fixed_distance "1 2 2.320  1 3 2.500"): se coloca cada valor, se congelan juntas y se optimiza
   function lineasCongelar(nombre, metodo, xyz, scan) {
-    const { tipo, c, atomos, etq, valores } = datosCoordenada(xyz, scan);
-    const v = Number(valores[0]);
-    const formato = tipo === 'distancia' ? ':.4f} Å' : ':.2f}°';
+    const sim = String(xyz).trim().split(/\r?\n/).map((l) => l.trim().split(/\s+/)[0]);
+    const lista = restriccionesDe(scan).map((r) => {
+      const tipo = SCAN_TIPOS[r.tipo] ? r.tipo : 'distancia';
+      const c = SCAN_TIPOS[tipo];
+      const atomos = (r.atomos || []).slice(0, c.natom);
+      return { tipo, c, atomos, etq: atomos.map((a) => `${sim[a - 1] || ''}${a}`).join('–'), v: Number(r.valor) };
+    });
+    const porOpcion = {};
+    lista.forEach((r) => { (porOpcion[r.c.frozen] ||= []).push(r.atomos.join(' ')); });
+    const opciones = Object.entries(porOpcion).map(([k, v]) => `'${k}': '${v.join('  ')}'`).join(', ');
+    const fixed = lista.map((r) => `${r.atomos.join(' ')} ${r.v}`);
+    const varias = lista.length > 1;
     return [
-      `# Optimización con ${c.simbolo}(${etq}) congelada en ${v} ${c.unidad}: se coloca el valor (el último átomo se mueve`,
-      `# con todo lo que cuelga de él), se congela (${c.frozen}) y se optimiza el resto de la molécula.`,
+      `# Optimización con ${varias ? `${lista.length} coordenadas congeladas a la vez` : 'una coordenada congelada'}: ${lista.map((r) => `${r.c.simbolo}(${r.etq}) = ${r.v} ${r.c.unidad}`).join(', ')}.`,
+      '# Se coloca cada valor (el último átomo se mueve con todo lo que cuelga de él), se congelan juntas',
+      `# y se optimiza el resto en una sola optimización. En Psi4 < 1.7 equivalía a fixed_${lista[0].c.frozen.split('_')[1]} "${fixed.filter((_, k) => lista[k].tipo === lista[0].tipo).join('  ')}";`,
+      '# optking 0.5 (Psi4 ≥ 1.7) ya no tiene fixed_*, por eso se colocan los valores y se usa frozen_*.',
       ...lineasColocar(),
-      `psi4.set_options({'${c.frozen}': '${atomos.join(' ')}'})`,
-      `colocar(${nombre}, [${atomos.map((a) => a - 1).join(', ')}], ${v.toFixed(4)})`,
+      `congeladas = [${lista.map((r) => `([${r.atomos.map((a) => a - 1).join(', ')}], ${r.v.toFixed(4)})`).join(', ')}]  # (átomos desde 0, valor)`,
+      '# Colocar un valor puede mover a otro: se repite unas pasadas',
+      'pasada = 0',
+      'while pasada < 30:',
+      '    for atomos_c, valor_c in congeladas:',
+      `        colocar(${nombre}, atomos_c, valor_c)`,
+      '    pasada += 1',
+      `psi4.set_options({${opciones}})`,
       `E, wfn = optimize('${metodo}', return_wfn=True)`,
-      `psi4.set_options({'${c.frozen}': ''})`,
-      `final = medir(${nombre}.geometry().np * psi4.constants.bohr2angstroms, [${atomos.map((a) => a - 1).join(', ')}])`,
-      `psi4.core.print_out(f"\\n\\n===== ${c.simbolo}(${etq}) CONGELADA = {final${formato}   E = {E:.10f} Eh =====\\n")`,
+      `psi4.set_options({${Object.keys(porOpcion).map((k) => `'${k}': ''`).join(', ')}})`,
+      '',
+      `x = ${nombre}.geometry().np * psi4.constants.bohr2angstroms`,
+      `psi4.core.print_out("\\n\\n===== OPTIMIZACIÓN CON ${varias ? `${lista.length} COORDENADAS CONGELADAS` : `${lista[0].c.simbolo}(${lista[0].etq}) CONGELADA`} =====\\n")`,
+      ...lista.map((r) => `psi4.core.print_out(f"${r.c.simbolo}(${r.etq}):  pedido ${r.v.toFixed(r.tipo === 'distancia' ? 3 : 2)}   final {medir(x, [${r.atomos.map((a) => a - 1).join(', ')}]):.${r.tipo === 'distancia' ? 3 : 2}f} ${r.c.unidad}\\n")`),
+      'psi4.core.print_out(f"E = {E:.10f} Eh\\n")',
     ];
   }
 

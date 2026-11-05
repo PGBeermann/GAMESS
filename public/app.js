@@ -123,7 +123,7 @@ function actualizarEstimacion() {
   const ft = {
     energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1),
     irc: dirs * ((metodo === 'hf' ? 5 : 3 * (n || 1)) + 4 * puntosIrc),
-    scan: 6 * (opcionesScanForm(true).valores.length || 1), // una optimización corta por punto
+    scan: 6 * ((opcionesScanForm(true).valores || []).length || 1), // una optimización corta por punto
     congelar: 10,
   }[tarea] || 1;
   actualizarInfoScan();
@@ -694,7 +694,7 @@ const SCAN_UI = {
 const tipoScan = () => $('.scan-tipo:checked')?.value || null;
 const modoCoordenada = () => $('input[name="scanModo"]:checked')?.value || 'scan';
 // Con una casilla marcada, el cálculo es un scan (cada punto, una optimización restringida) o una
-// sola optimización con la coordenada congelada en un valor
+// sola optimización con una o varias coordenadas congeladas a la vez
 const tareaEfectiva = () => (tipoScan() ? (modoCoordenada() === 'congelar' ? 'congelar' : 'scan') : $('#tarea').value);
 const CAMPOS_ATOMOS = ['#scanI', '#scanJ', '#scanK', '#scanL'];
 const atomosScanForm = () => CAMPOS_ATOMOS.slice(0, SCAN_UI[tipoScan() || 'distancia'].natom).map((s) => parseInt($(s).value, 10));
@@ -708,18 +708,88 @@ function valorActualScan(tipo, atomos) {
   return { v: calcularMedida(P), etq: atomos.map((a) => `${c[a - 1].e}${a}`).join('–') };
 }
 
+// ---------- Coordenadas congeladas: una o varias a la vez, en una sola optimización ----------
+// (como fixed_distance "1 2 2.320  1 3 2.500  1 4 1.090" en un .in)
+const MAX_CONGELADAS = 10;
+const TIPO_POR_NATOM = { 2: 'distancia', 3: 'angulo', 4: 'diedro' };
+const lineaCongelada = (r) => `${r.atomos.join(' ')} ${r.valor}`;
+const claveCongelada = (r) => {
+  const ida = r.atomos.join('-'); const vuelta = [...r.atomos].reverse().join('-'); // 1–2 y 2–1 son la misma
+  return `${r.tipo}:${ida < vuelta ? ida : vuelta}`;
+};
+
+// Lista escrita: una coordenada por línea (o separadas por «;»): átomos y valor.
+// 2 átomos = distancia, 3 = ángulo (vértice en medio), 4 = diedro
+function leerListaCongeladas(texto) {
+  const lineas = String(texto || '').split(/[\n;]+/).map((l) => l.trim()).filter(Boolean);
+  if (lineas.length > MAX_CONGELADAS) throw new Error(`Coordenadas congeladas: máximo ${MAX_CONGELADAS} (hay ${lineas.length}).`);
+  const nat = estado.geom?.natomos || 0;
+  const vistas = new Set();
+  return lineas.map((l, k) => {
+    const f = l.split(/[\s,]+/).filter(Boolean);
+    const tipo = TIPO_POR_NATOM[f.length - 1];
+    if (!tipo) throw new Error(`Lista, línea ${k + 1} («${l}»): escriba 2, 3 o 4 números de átomo y el valor.`);
+    const atomos = f.slice(0, -1).map(Number);
+    const valor = Number(f[f.length - 1]);
+    if (!atomos.every(Number.isInteger) || !Number.isFinite(valor)) throw new Error(`Lista, línea ${k + 1} («${l}»): los átomos son enteros y el valor usa punto decimal.`);
+    if (new Set(atomos).size !== atomos.length || atomos.some((a) => a < 1 || (nat && a > nat))) throw new Error(`Lista, línea ${k + 1} («${l}»): use átomos distintos entre 1 y ${nat || '?'}.`);
+    const c = SCAN_UI[tipo];
+    if (valor < c.min || valor > c.max) throw new Error(`Lista, línea ${k + 1} («${l}»): el ${c.nombre === 'distancia' ? 'valor de la distancia' : c.nombre} debe estar entre ${c.min} y ${c.max} ${c.unidad}.`);
+    const r = { tipo, atomos, valor: +valor.toFixed(4) };
+    if (vistas.has(claveCongelada(r))) throw new Error(`Lista, línea ${k + 1} («${l}»): esa coordenada ya está en la lista.`);
+    vistas.add(claveCongelada(r));
+    return r;
+  });
+}
+
+// Coordenada de los campos de arriba (átomos y valor)
+function congeladaDeCampos() {
+  const tipo = tipoScan() || 'distancia';
+  const c = SCAN_UI[tipo];
+  const atomos = atomosScanForm();
+  const nat = estado.geom?.natomos || 0;
+  if (atomos.some((a) => !Number.isInteger(a) || a < 1 || (nat && a > nat)) || new Set(atomos).size !== atomos.length) {
+    throw new Error(`Coordenada congelada: elija ${c.natom} átomos distintos entre 1 y ${nat || '?'}.`);
+  }
+  const v = parseFloat($('#scanValor').value);
+  if (!Number.isFinite(v)) throw new Error(`Coordenada congelada: indique el valor (${c.unidad}).`);
+  return { tipo, atomos, valor: +v.toFixed(4) };
+}
+
+// Lo que se congela: la lista; si está vacía, la coordenada de los campos de arriba
+function restriccionesForm() {
+  const lista = leerListaCongeladas($('#congelarLista').value);
+  return lista.length ? lista : [congeladaDeCampos()];
+}
+
+// «➕ Agregar a la lista»: pasa la coordenada de arriba a la lista (si ya estaba, cambia su valor)
+function agregarCongelada() {
+  try {
+    const nueva = congeladaDeCampos();
+    const lista = leerListaCongeladas($('#congelarLista').value);
+    const k = lista.findIndex((r) => claveCongelada(r) === claveCongelada(nueva));
+    if (k >= 0) lista[k] = nueva; else lista.push(nueva);
+    if (lista.length > MAX_CONGELADAS) throw new Error(`Coordenadas congeladas: máximo ${MAX_CONGELADAS}.`);
+    $('#congelarLista').value = lista.map(lineaCongelada).join('\n');
+    actualizarEstimacion();
+    programarSincronizacion();
+  } catch (e) {
+    $('#scanInfo').textContent = `⚠ ${e.message}`;
+  }
+}
+
 // Lista de valores: la del .in aplicado si el formulario no cambió, o desde/hasta/paso
 function opcionesScanForm(silencioso = false) {
   const tipo = tipoScan() || 'distancia';
   const c = SCAN_UI[tipo];
   const atomos = atomosScanForm();
   if (modoCoordenada() === 'congelar') {
-    const v = parseFloat($('#scanValor').value);
-    if (!Number.isFinite(v)) {
-      if (silencioso) return { tipo, atomos, valores: [] };
-      throw new Error(`Coordenada congelada: indique el valor (${c.unidad}).`);
+    try {
+      return { restricciones: restriccionesForm() };
+    } catch (e) {
+      if (silencioso) return { restricciones: [] };
+      throw e;
     }
-    return { tipo, atomos, valores: [+v.toFixed(4)] };
   }
   if (estado.scanEditor && estado.scanEditor.firma === firmaScan()) return { tipo, atomos, valores: estado.scanEditor.valores };
   const desde = parseFloat($('#scanDesde').value); const hasta = parseFloat($('#scanHasta').value);
@@ -743,17 +813,23 @@ function rangoInicialScan(tipo, v) {
 }
 
 function ponerScanEnFormulario(scan, congelar = false) {
-  $$('.scan-tipo').forEach((c) => { c.checked = c.value === scan.tipo; });
   $$('input[name="scanModo"]').forEach((r) => { r.checked = r.value === (congelar ? 'congelar' : 'scan'); });
-  scan.atomos.forEach((a, k) => { $(CAMPOS_ATOMOS[k]).value = a; });
-  const v = scan.valores;
   if (congelar) {
-    $('#scanValor').value = v[0];
+    // Una o varias coordenadas: la primera va a los campos de arriba; si hay más, todas a la lista
+    const lista = scan.restricciones?.length ? scan.restricciones : [{ tipo: scan.tipo, atomos: scan.atomos, valor: scan.valores?.[0] }];
+    const r0 = lista[0];
+    $$('.scan-tipo').forEach((c) => { c.checked = c.value === r0.tipo; });
+    r0.atomos.forEach((a, k) => { $(CAMPOS_ATOMOS[k]).value = a; });
+    $('#scanValor').value = r0.valor;
     delete $('#scanValor').dataset.auto;
+    $('#congelarLista').value = lista.length > 1 ? lista.map(lineaCongelada).join('\n') : '';
     estado.scanEditor = null;
     actualizarScanUI();
     return;
   }
+  $$('.scan-tipo').forEach((c) => { c.checked = c.value === scan.tipo; });
+  scan.atomos.forEach((a, k) => { $(CAMPOS_ATOMOS[k]).value = a; });
+  const v = scan.valores;
   $('#scanDesde').value = v[0]; $('#scanHasta').value = v[v.length - 1];
   if (v.length > 1) $('#scanPaso').value = +Math.abs(v[1] - v[0]).toFixed(4);
   estado.scanEditor = { valores: v, firma: firmaScan() }; // conserva listas no uniformes del .in
@@ -825,7 +901,25 @@ function actualizarScanUI() {
   if (congelar) {
     const v = parseFloat($('#scanValor').value);
     if (Number.isFinite(v) && (v < c.min || v > c.max)) txt += `⚠ El valor debe estar entre ${c.min} y ${c.max} ${c.unidad}. `;
-    txt += `Se coloca ${tipo === 'distancia' ? 'la' : 'el'} ${c.nombre} en el valor indicado (el último átomo se mueve con todo lo que cuelga de él), se congela y se optimiza el resto de la molécula: una sola optimización, sin scan. Reemplaza al «Tipo de cálculo».`;
+    let lista = [];
+    try {
+      lista = leerListaCongeladas($('#congelarLista').value);
+    } catch (e) {
+      txt += `⚠ ${e.message} `;
+    }
+    if (lista.length) {
+      // Lo que se va a congelar, con el valor actual de cada coordenada en la geometría cargada
+      const descripcion = lista.map((r) => {
+        const cc = SCAN_UI[r.tipo];
+        const a = valorActualScan(r.tipo, r.atomos);
+        const f = (x) => (r.tipo === 'distancia' ? `${x.toFixed(3)} Å` : `${x.toFixed(1)}°`);
+        return `${cc.simbolo}(${a?.etq || r.atomos.join('–')}) = ${f(r.valor)}${a ? ` (ahora ${f(a.v)})` : ''}`;
+      }).join('; ');
+      txt += `Se congela${lista.length > 1 ? `n ${lista.length} coordenadas a la vez` : ' 1 coordenada'} (la lista): ${descripcion}. Se coloca cada valor (el último átomo se mueve con todo lo que cuelga de él), se congelan juntas y se optimiza el resto en una sola optimización. Para agregar otra, elija los átomos y el valor arriba y pulse «➕ Agregar a la lista».`;
+    } else {
+      txt += `Se coloca ${tipo === 'distancia' ? 'la' : 'el'} ${c.nombre} en el valor indicado (el último átomo se mueve con todo lo que cuelga de él), se congela y se optimiza el resto de la molécula: una sola optimización, sin scan. Para congelar varias coordenadas a la vez (p. ej. tres distancias), pulse «➕ Agregar a la lista» con cada una, o escríbalas en la lista (una por línea: «1 2 2.320»).`;
+    }
+    txt += ' Reemplaza al «Tipo de cálculo».';
     $('#scanInfo').textContent = txt;
     return;
   }
@@ -1354,7 +1448,7 @@ function panelResumen(t, r) {
     ${r.tarea === 'ts' && f?.n_imaginarias === 1 ? '<button class="btn chico" type="button" id="lanzarIRC" title="Sigue el camino de mínima energía desde este TS hacia reactivos y productos">Calcular IRC desde este TS</button>' : ''}
   </div><div class="cifras">`;
   const sv = r.solvatacion;
-  html += cifra(({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: 'Energía (coordenada congelada)' }[r.tarea] || 'Energía total') + (sv ? ' en solución' : ''), `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  html += cifra(({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: `Energía (${r.congelado?.restricciones?.length > 1 ? 'coordenadas congeladas' : 'coordenada congelada'})` }[r.tarea] || 'Energía total') + (sv ? ' en solución' : ''), `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
   if (sv) {
     html += cifra('Solvente (PCM)', esc(sv.nombre), `ε = ${sv.epsilon ?? '?'} · ${esc(sv.modelo)} · ${esc(sv.cavidad || '')}`);
     if (sv.solvatacion_kcal != null) {
@@ -1366,10 +1460,16 @@ function panelResumen(t, r) {
   }
   const cg = r.congelado;
   if (cg) {
-    const dec = cg.unidad === 'Å' ? 3 : 1;
-    const nombreTipo = { distancia: 'Distancia congelada', angulo: 'Ángulo congelado', diedro: 'Diedro congelado' }[cg.tipo] || 'Coordenada congelada';
-    html += cifra(nombreTipo, `${cg.simbolo}(${esc(cg.etiqueta)}) = ${fx(cg.valor_final, dec)} ${cg.unidad}`,
-      `pedido ${fx(cg.valor, dec)} ${cg.unidad} · ${cg.convergio ? (cg.nota ? esc(cg.nota) : 'optimización convergida') : `no convergió${cg.nota ? `: ${esc(cg.nota)}` : ''}`}`);
+    // Una o varias coordenadas congeladas a la vez (los resultados antiguos traen una sola, sin lista)
+    const lista = cg.restricciones || [cg];
+    lista.forEach((x) => {
+      const dec = x.unidad === 'Å' ? 3 : 1;
+      const nombreTipo = { distancia: 'Distancia congelada', angulo: 'Ángulo congelado', diedro: 'Diedro congelado' }[x.tipo] || 'Coordenada congelada';
+      html += cifra(nombreTipo, `${x.simbolo}(${esc(x.etiqueta)}) = ${fx(x.valor_final, dec)} ${x.unidad}`, `pedido ${fx(x.valor, dec)} ${x.unidad}`);
+    });
+    html += cifra(lista.length > 1 ? `${lista.length} coordenadas congeladas` : 'Optimización con la coordenada congelada',
+      cg.convergio ? 'Convergió' : 'No convergió',
+      cg.convergio ? (cg.nota ? esc(cg.nota) : 'Una sola optimización del resto de la molécula') : esc(cg.nota || ''));
   }
   const sc = r.scan;
   if (sc) {
@@ -2292,6 +2392,8 @@ function eventos() {
   $('#scanDeMedida').addEventListener('click', scanDesdeMedida);
   $$('input[name="scanModo"]').forEach((r) => r.addEventListener('change', () => { actualizarScanUI(); actualizarEstimacion(); }));
   $('#scanValor').addEventListener('input', (e) => { delete e.target.dataset.auto; actualizarEstimacion(); });
+  $('#congelarAgregar').addEventListener('click', agregarCongelada);
+  $('#congelarLista').addEventListener('input', actualizarEstimacion);
   $('#dlgMoldenBase').addEventListener('input', vistaMolden);
   $('#dlgMoldenForm').addEventListener('submit', (e) => { e.preventDefault(); guardarMoldenNumerados(); });
   $('#dlgMoldenCerrar').addEventListener('click', () => $('#dlgMolden').close());

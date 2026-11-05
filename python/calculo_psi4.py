@@ -388,45 +388,42 @@ SCAN_TIPOS = {
 }
 
 
-def scan_relajado(metodo, mol, atomos, valores, tipo="distancia", congelar=False):
+def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
     """Scan relajado de una distancia, un ángulo o un diedro (átomos numerados desde 1).
 
     Para cada valor se coloca la coordenada, se congela (optking: frozen_distance, frozen_bend
     o frozen_dihedral) y se optimiza el resto de la molécula, partiendo de la geometría
     optimizada del punto anterior. Al final se escribe la tabla del scan en el .out.
-    Con congelar=True hay un solo valor: es una optimización con la coordenada congelada en ese
-    valor (sin optimizar antes la geometría de partida).
+    (La optimización con coordenadas congeladas, sin scan, está en optimizar_congelada.)
     """
     natom, opcion, simbolo, unidad = SCAN_TIPOS[tipo]
     idx = [a - 1 for a in atomos[:natom]]
     simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
     etiqueta = "–".join(f"{simbolos[i]}{i + 1}" for i in idx)
     fmt = (lambda v: f"{v:6.3f} Å") if tipo == "distancia" else (lambda v: f"{v:7.2f}°")
-    nombre = f"Optimización con {simbolo}({etiqueta}) congelada" if congelar else f"Scan relajado {simbolo}({etiqueta})"
+    nombre = f"Scan relajado {simbolo}({etiqueta})"
     contador, puntos = [0], []
     # Pasos cortos (como hace optking en TS/IRC): con pasos grandes, la coordenada congelada se
     # desvía al pasar de coordenadas internas a cartesianas y la molécula puede deformarse.
     pasos_cortos = {"intrafrag_step_limit": 0.2, "intrafrag_step_limit_max": 0.3}
     tolerancia = 0.01 if tipo == "distancia" else 0.5  # Å o grados
-    if not congelar:
-        with en_vivo(mol, contador):
-            # El scan parte de una geometría optimizada con este método (la de MMFF no es un mínimo
-            # aquí): así cada punto es un desplazamiento pequeño y optking converge en pocos pasos.
-            etapa(f"{nombre}: optimizando primero la geometría de partida")
-            inicial = a_numpy(mol.geometry()).reshape(-1, 3).copy()
-            try:
-                psi4.optimize(metodo, molecule=mol)
-            except Exception as e:  # noqa: BLE001
-                if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
-                    raise
-                mol.set_geometry(psi4.core.Matrix.from_array(inicial))
-                mol.update_geometry()
+    with en_vivo(mol, contador):
+        # El scan parte de una geometría optimizada con este método (la de MMFF no es un mínimo
+        # aquí): así cada punto es un desplazamiento pequeño y optking converge en pocos pasos.
+        etapa(f"{nombre}: optimizando primero la geometría de partida")
+        inicial = a_numpy(mol.geometry()).reshape(-1, 3).copy()
+        try:
+            psi4.optimize(metodo, molecule=mol)
+        except Exception as e:  # noqa: BLE001
+            if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
+                raise
+            mol.set_geometry(psi4.core.Matrix.from_array(inicial))
+            mol.update_geometry()
     psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom]), **pasos_cortos})
     energias_pasos = []  # energía de cada paso (la registra en_vivo)
     with en_vivo(mol, contador, energias_pasos):
         for n, valor in enumerate(valores, 1):
-            etapa(f"{nombre} en {fmt(valor).strip()}" if congelar else
-                  f"{nombre}: punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
+            etapa(f"{nombre}: punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
             previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()  # última geometría buena (bohr)
             partida = None  # geometría desde la que se repite el punto (si hace falta)
             desviada = lambda c: (abs(medir_coordenada(c, tipo, idx) - valor) if tipo != "diedro"  # noqa: E731
@@ -459,7 +456,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia", congelar=False
                         if buenas:
                             mejor = min(buenas, key=lambda r: r["energia"])
                             partida = np.array([[float(v) for v in l.split()[1:4]] for l in mejor["xyz"].splitlines()]) / BOHR_ANG
-                            etapa(f"{nombre}: repitiendo {'la optimización' if congelar else f'el punto {n}'} desde la mejor geometría visitada")
+                            etapa(f"{nombre}: repitiendo el punto {n} desde la mejor geometría visitada")
                             psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
                             continue
                 sim, coords = geometria_actual(mol)
@@ -470,7 +467,7 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia", congelar=False
                 nota = f"la coordenada congelada se desvió a {fmt(final).strip()}"
                 if intento == 1:
                     partida = None  # se repite desde la última geometría buena
-                    etapa(f"{nombre}: repitiendo {'la optimización' if congelar else f'el punto {n}'} con pasos más cortos")
+                    etapa(f"{nombre}: repitiendo el punto {n} con pasos más cortos")
                     psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
             psi4.set_options(pasos_cortos)
             puntos.append({"valor": float(valor), "valor_final": final, "energia": energia,
@@ -495,18 +492,14 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia", congelar=False
     # Tabla en el .out (como haría un script de Psi4 con psi4.core.print_out)
     congelado = {"distancia": "la distancia queda congelada", "angulo": "el ángulo queda congelado",
                   "diedro": "el diedro queda congelado"}[tipo]
-    if congelar:
-        psi4.core.print_out(f"\n\n===== OPTIMIZACIÓN CON {simbolo}({etiqueta}) CONGELADA ({metodo.upper()}) =====\n")
-        psi4.core.print_out(f"Se coloca el valor y {congelado} ({opcion}) mientras se optimiza el resto.\n\n")
-    else:
-        psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}) =====\n")
-        psi4.core.print_out(f"ΔE respecto al primer punto; {congelado} ({opcion}) en cada optimización.\n\n")
+    psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}) =====\n")
+    psi4.core.print_out(f"ΔE respecto al primer punto; {congelado} ({opcion}) en cada optimización.\n\n")
     for p in puntos:
         if p["energia"] is None:
             psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   sin energía ({p['nota']})\n")
             continue
         aviso = ("   (convergió en energía)" if p["nota"] else "") if p["convergio"] else "   (no convergió)"
-        de = "" if congelar else f"   ΔE = {p['de_kcal']:8.3f} kcal/mol"
+        de = f"   ΔE = {p['de_kcal']:8.3f} kcal/mol"
         psi4.core.print_out(f"{simbolo}({etiqueta}) = {fmt(p['valor'])}   E = {p['energia']:.10f} Eh{de}{aviso}\n")
     psi4.core.print_out("=" * 60 + "\n")
 
@@ -520,10 +513,147 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia", congelar=False
             "etiqueta": etiqueta, "puntos": puntos,
             "valor_minimo": minimo["valor"], "valor_maximo": maximo["valor"],
             "rango_kcal": (maximo["energia"] - minimo["energia"]) * HARTREE_KCAL,
-            "no_convergidos": sum(1 for p in puntos if not p["convergio"]),
-            # Pasos de la optimización (pestaña «Optimización» de una coordenada congelada)
-            "pasos": [{"paso": k, "energia": r["energia"], "xyz": r["xyz"]}
-                      for k, r in enumerate(energias_pasos, 1)] if congelar else None}
+            "no_convergidos": sum(1 for p in puntos if not p["convergio"])}
+
+
+MAX_RESTRICCIONES = 10
+
+
+def restricciones_validas(op, n_atomos):
+    """Lista de coordenadas congeladas [{tipo, atomos (desde 1), valor}] del cálculo «congelar».
+
+    Acepta también la forma antigua de una sola coordenada: {tipo, atomos, valores: [v]}.
+    """
+    lista = op.get("restricciones")
+    if not lista:
+        lista = [{"tipo": op.get("tipo"), "atomos": op.get("atomos"), "valor": (op.get("valores") or [None])[0]}]
+    if not isinstance(lista, list) or not 1 <= len(lista) <= MAX_RESTRICCIONES:
+        raise ValueError(f"Coordenadas congeladas: entre 1 y {MAX_RESTRICCIONES}.")
+    salida, vistas = [], set()
+    for r in lista:
+        tipo = r.get("tipo") if r.get("tipo") in SCAN_TIPOS else "distancia"
+        natom = SCAN_TIPOS[tipo][0]
+        atomos = [int(a) for a in (r.get("atomos") or [])][:natom]
+        if len(atomos) != natom or len(set(atomos)) != natom or not all(1 <= a <= n_atomos for a in atomos) \
+                or r.get("valor") is None:
+            raise ValueError("Coordenada congelada no válida.")
+        clave = (tipo, min(tuple(atomos), tuple(reversed(atomos))))  # 1–2 y 2–1 son la misma
+        if clave in vistas:
+            raise ValueError(f"La coordenada {'–'.join(map(str, atomos))} está repetida.")
+        vistas.add(clave)
+        salida.append({"tipo": tipo, "atomos": atomos, "valor": float(r["valor"])})
+    return salida
+
+
+def optimizar_congelada(metodo, mol, restricciones):
+    """Una sola optimización con una o varias coordenadas congeladas a la vez (átomos desde 1).
+
+    Equivale a fixed_distance "1 2 2.320  1 3 2.500  1 4 1.090" en un .in: se colocan todos los
+    valores (varias pasadas, porque colocar uno puede mover a otro), se congelan juntos con
+    frozen_distance / frozen_bend / frozen_dihedral y se optimiza el resto de la molécula.
+    """
+    simbolos = [mol.symbol(k).capitalize() for k in range(mol.natom())]
+    lista = []
+    for r in restricciones:
+        natom, opcion, simbolo, unidad = SCAN_TIPOS[r["tipo"]]
+        idx = [a - 1 for a in r["atomos"][:natom]]
+        lista.append({"tipo": r["tipo"], "opcion": opcion, "simbolo": simbolo, "unidad": unidad,
+                      "atomos": [i + 1 for i in idx], "idx": idx, "valor": float(r["valor"]),
+                      "etiqueta": "–".join(f"{simbolos[i]}{i + 1}" for i in idx)})
+    fmt = lambda c, v: f"{v:.3f} Å" if c["tipo"] == "distancia" else f"{v:.2f}°"  # noqa: E731
+    texto = ", ".join(f"{c['simbolo']}({c['etiqueta']}) = {fmt(c, c['valor'])}" for c in lista)
+    plural = len(lista) > 1
+
+    def desviacion(c, x):
+        d = medir_coordenada(x, c["tipo"], c["idx"]) - c["valor"]
+        return abs((d + 180.0) % 360.0 - 180.0) if c["tipo"] == "diedro" else abs(d)
+
+    def desviada(x):  # x en Å
+        return any(desviacion(c, x) > (0.01 if c["tipo"] == "distancia" else 0.5) for c in lista)
+
+    def xyz_a_bohr(texto_xyz_paso):
+        return np.array([[float(v) for v in l.split()[1:4]] for l in texto_xyz_paso.splitlines()]) / BOHR_ANG
+
+    # 1) Colocar todos los valores
+    etapa(f"Colocando {texto}")
+    for _ in range(30):
+        for c in lista:
+            colocar_coordenada(mol, c["tipo"], c["idx"], c["valor"])
+        if not desviada(geometria_actual(mol)[1]):
+            break
+    colocada = a_numpy(mol.geometry()).reshape(-1, 3).copy()
+    aviso_colocar = "" if not desviada(geometria_actual(mol)[1]) else \
+        "no se pudieron colocar todos los valores a la vez (¿son compatibles entre sí?)"
+
+    # 2) Congelarlos juntos y optimizar el resto (pasos cortos, como en el scan)
+    congeladas = {}
+    for c in lista:
+        congeladas.setdefault(c["opcion"], []).extend(c["atomos"])
+    opciones = {k: " ".join(map(str, v)) for k, v in congeladas.items()}
+    pasos_cortos = {"intrafrag_step_limit": 0.2, "intrafrag_step_limit_max": 0.3}
+    psi4.set_options({**opciones, **pasos_cortos})
+    nombre = f"Optimización con {texto} congelada{'s' if plural else ''}"
+    contador, energias_pasos = [0], []
+    partida = None
+    energia, convergio, nota = None, True, ""
+    try:
+        with en_vivo(mol, contador, energias_pasos):
+            for intento in (1, 2):
+                mol.set_geometry(psi4.core.Matrix.from_array(colocada if partida is None else partida))
+                mol.update_geometry()
+                etapa(nombre if intento == 1 else f"{nombre}: repitiendo con pasos más cortos")
+                convergio, nota = True, ""
+                inicio = len(energias_pasos)
+                try:
+                    energia = float(psi4.optimize(metodo, molecule=mol))
+                except Exception as e:  # noqa: BLE001
+                    if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
+                        raise
+                    convergio, nota = False, mensaje_error(e)
+                    energia = variable_global("CURRENT ENERGY")
+                    pasos = [r for r in energias_pasos[inicio:] if r.get("energia") is not None]
+                    # Con coordenadas congeladas, optking a veces no baja la fuerza residual aunque la
+                    # energía ya no cambia: si los últimos pasos son estables, la optimización vale
+                    ultimas = [r["energia"] for r in pasos[-4:]]
+                    if type(e).__name__ == "OptimizationConvergenceError" and len(ultimas) == 4 \
+                            and max(ultimas) - min(ultimas) < 2e-6:
+                        convergio, nota = True, "convergió en energía (quedó una fuerza residual por las restricciones)"
+                    elif intento == 1 and pasos:
+                        # Se repite desde la mejor geometría visitada que respeta los valores
+                        buenas = [r for r in pasos if not desviada(xyz_a_bohr(r["xyz"]) * BOHR_ANG)]
+                        if buenas:
+                            partida = xyz_a_bohr(min(buenas, key=lambda r: r["energia"])["xyz"])
+                            psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
+                            continue
+                if not desviada(geometria_actual(mol)[1]):
+                    break
+                convergio, nota = False, "alguna coordenada congelada se desvió de su valor"
+                if intento == 1:
+                    partida = None  # se repite desde la geometría colocada, con pasos más cortos
+                    psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
+    finally:
+        psi4.set_options({**{k: "" for k in opciones}, "intrafrag_step_limit": 0.5, "intrafrag_step_limit_max": 1.0})
+    if energia is None:
+        raise RuntimeError("La optimización con coordenadas congeladas no produjo una energía.")
+    if aviso_colocar:
+        nota = f"{aviso_colocar}; {nota}" if nota else aviso_colocar
+
+    coords = geometria_actual(mol)[1]
+    salida = []
+    for c in lista:
+        salida.append({k: c[k] for k in ("tipo", "simbolo", "unidad", "atomos", "etiqueta", "valor")}
+                      | {"valor_final": medir_coordenada(coords, c["tipo"], c["idx"]), "opcion": c["opcion"]})
+
+    # Tabla en el .out
+    titulo = f"{len(lista)} COORDENADAS CONGELADAS" if plural else f"{lista[0]['simbolo']}({lista[0]['etiqueta']}) CONGELADA"
+    psi4.core.print_out(f"\n\n===== OPTIMIZACIÓN CON {titulo} ({metodo.upper()}) =====\n")
+    psi4.core.print_out("Se colocan los valores, se congelan juntos y se optimiza el resto en una sola optimización.\n\n")
+    for c, s in zip(lista, salida):
+        psi4.core.print_out(f"{c['simbolo']}({c['etiqueta']}):  pedido {fmt(c, c['valor']):>10}   final {fmt(c, s['valor_final']):>10}   ({c['opcion']})\n")
+    aviso = ("   (convergió en energía)" if nota else "") if convergio else "   (no convergió)"
+    psi4.core.print_out(f"\nE = {energia:.10f} Eh{aviso}\n" + "=" * 60 + "\n")
+    return {"restricciones": salida, "energia": energia, "convergio": convergio, "nota": nota,
+            "pasos": [{"paso": k, "energia": r["energia"], "xyz": r["xyz"]} for k, r in enumerate(energias_pasos, 1)]}
 
 
 # ---------- Archivos para IboView (formato Molden) ----------
@@ -868,25 +998,25 @@ def main():
             resultado["irc"] = irc(metodo, mol, direccion, puntos, paso)
             etapa("Calculando la función de onda en el estado de transición")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
-        elif tarea in ("scan", "congelar"):
+        elif tarea == "congelar":
+            # Una o varias coordenadas congeladas a la vez, en una sola optimización
+            datos = optimizar_congelada(metodo, mol, restricciones_validas(entrada.get("scan") or {}, n_atomos))
+            resultado["congelado"] = {k: datos[k] for k in ("restricciones", "energia", "convergio", "nota")}
+            resultado["trayectoria"] = datos["pasos"]
+            etapa("Calculando la función de onda en la geometría optimizada")
+            energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
+        elif tarea == "scan":
             op = entrada.get("scan") or {}
             tipo = op.get("tipo") if op.get("tipo") in SCAN_TIPOS else "distancia"
             natom = SCAN_TIPOS[tipo][0]
             atomos = [int(a) for a in (op.get("atomos") or [])][:natom]
-            valores = [float(v) for v in (op.get("valores") or [])][:1 if tarea == "congelar" else 40]
+            valores = [float(v) for v in (op.get("valores") or [])][:40]
             if len(atomos) != natom or len(set(atomos)) != natom or not all(1 <= a <= n_atomos for a in atomos) or not valores:
                 raise ValueError("Opciones del scan no válidas.")
-            datos = scan_relajado(metodo, mol, atomos, valores, tipo, congelar=tarea == "congelar")
-            if tarea == "congelar":
-                p = datos["puntos"][0]
-                resultado["congelado"] = {**{k: datos[k] for k in ("tipo", "simbolo", "unidad", "atomos", "etiqueta")},
-                                          **{k: p[k] for k in ("valor", "valor_final", "energia", "convergio", "nota")}}
-                resultado["trayectoria"] = datos["pasos"] or []
-                etapa("Calculando la función de onda en la geometría optimizada")
-            else:
-                datos.pop("pasos", None)
-                resultado["scan"] = datos
-                etapa("Calculando la función de onda en el punto de menor energía del scan")
+            datos = scan_relajado(metodo, mol, atomos, valores, tipo)
+            datos.pop("pasos", None)
+            resultado["scan"] = datos
+            etapa("Calculando la función de onda en el punto de menor energía del scan")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         else:
             if tarea == "ts":

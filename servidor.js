@@ -66,7 +66,7 @@ const TAREAS = [
   { id: 'ts', nombre: 'Estado de transición (TS) + frecuencias' },
   { id: 'irc', nombre: 'Camino de reacción IRC (desde un TS)' },
   { id: 'scan', nombre: 'Scan relajado (distancia, ángulo o diedro)' },
-  { id: 'congelar', nombre: 'Optimización con una coordenada congelada' },
+  { id: 'congelar', nombre: 'Optimización con coordenadas congeladas' },
 ];
 
 // Solventes predefinidos de PCMSolver: la tabla está en public/entrada.js (la usan también la página y el lector de .in)
@@ -93,7 +93,7 @@ const SCAN = {
   angulo: { natom: 3, min: 20, max: 179, nombre: 'ángulos', unidad: '°' },
   diedro: { natom: 4, min: -360, max: 360, nombre: 'diedros', unidad: '°' },
 };
-function opcionesScan(o = {}, natomos = 0, congelar = false) {
+function opcionesScan(o = {}, natomos = 0) {
   const tipo = SCAN[o.tipo] ? o.tipo : 'distancia';
   const c = SCAN[tipo];
   const atomos = (Array.isArray(o.atomos) ? o.atomos : []).slice(0, c.natom).map((a) => Math.round(Number(a)));
@@ -101,10 +101,37 @@ function opcionesScan(o = {}, natomos = 0, congelar = false) {
     throw new Error(`Scan de ${tipo}: indique ${c.natom} átomos distintos entre 1 y ${natomos}.`);
   }
   const valores = (Array.isArray(o.valores) ? o.valores : []).map(Number).filter(Number.isFinite);
-  if (congelar && valores.length !== 1) throw new Error('Coordenada congelada: indique un solo valor.');
   if (valores.length < 1 || valores.length > 40) throw new Error(`Scan: se necesitan entre 1 y 40 ${c.nombre}.`);
   if (valores.some((v) => v < c.min || v > c.max)) throw new Error(`Scan: los ${c.nombre} deben estar entre ${c.min} y ${c.max} ${c.unidad}.`);
   return { tipo, atomos, valores: valores.map((v) => Math.round(v * 10000) / 10000) };
+}
+
+// Coordenadas congeladas a la vez en una sola optimización (como fixed_distance "1 2 2.32  1 3 2.50"):
+// hasta 10, cada una { tipo, atomos (desde 1), valor }. Acepta la forma antigua { tipo, atomos, valores: [v] }.
+const MAX_CONGELADAS = 10;
+function opcionesCongelar(o = {}, natomos = 0) {
+  const lista = Array.isArray(o.restricciones) && o.restricciones.length ? o.restricciones
+    : [{ tipo: o.tipo, atomos: o.atomos, valor: Array.isArray(o.valores) ? o.valores[0] : undefined }];
+  if (lista.length > MAX_CONGELADAS) throw new Error(`Coordenadas congeladas: máximo ${MAX_CONGELADAS}.`);
+  const vistas = new Set();
+  const restricciones = lista.map((r = {}, k) => {
+    const tipo = SCAN[r.tipo] ? r.tipo : 'distancia';
+    const c = SCAN[tipo];
+    const atomos = (Array.isArray(r.atomos) ? r.atomos : []).slice(0, c.natom).map((a) => Math.round(Number(a)));
+    const n = lista.length > 1 ? ` n.º ${k + 1}` : '';
+    if (atomos.length !== c.natom || new Set(atomos).size !== c.natom || !atomos.every((a) => a >= 1 && a <= natomos)) {
+      throw new Error(`Coordenada congelada${n}: ${tipo} necesita ${c.natom} átomos distintos entre 1 y ${natomos}.`);
+    }
+    const valor = Number(r.valor);
+    if (!Number.isFinite(valor)) throw new Error(`Coordenada congelada${n}: indique el valor (${c.unidad}).`);
+    if (valor < c.min || valor > c.max) throw new Error(`Coordenada congelada${n}: los ${c.nombre} deben estar entre ${c.min} y ${c.max} ${c.unidad}.`);
+    const ida = atomos.join('-'); const vuelta = [...atomos].reverse().join('-'); // 1–2 y 2–1 son la misma
+    const clave = `${tipo}:${ida < vuelta ? ida : vuelta}`;
+    if (vistas.has(clave)) throw new Error(`La coordenada ${atomos.join('–')} está repetida.`);
+    vistas.add(clave);
+    return { tipo, atomos, valor: Math.round(valor * 10000) / 10000 };
+  });
+  return { restricciones };
 }
 
 // Opciones del IRC (dirección, puntos por dirección y tamaño de paso en bohr·amu^½), acotadas
@@ -419,7 +446,8 @@ app.post('/api/calculos', async (req, res) => {
     const titulo = String(b.titulo || 'molécula').replace(/[^\p{L}\p{N} ()\-_,.+=#]/gu, '').slice(0, 80) || 'molécula';
     const irc = tarea.id === 'irc' ? opcionesIRC(b.irc) : undefined;
     const pcm = opcionesPCM(b, metodo.id);
-    const scan = ['scan', 'congelar'].includes(tarea.id) ? opcionesScan(b.scan, g.natomos, tarea.id === 'congelar') : undefined;
+    const scan = tarea.id === 'scan' ? opcionesScan(b.scan, g.natomos)
+      : tarea.id === 'congelar' ? opcionesCongelar(b.scan, g.natomos) : undefined;
     const t = {
       id, estado: 'en_cola', creado: ahora(), ip,
       titulo, formula: String(b.formula || '').slice(0, 60), smiles: String(b.smiles || '').slice(0, 500),

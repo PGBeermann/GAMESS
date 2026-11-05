@@ -166,7 +166,7 @@
             <label class="chk"><input type="checkbox" class="scan-tipo" value="diedro"> Ángulo diedro <span class="info">(4 átomos)</span></label>
           </div>
           <div class="scan-modo" id="scanModo" role="radiogroup" aria-label="Qué hacer con la coordenada" hidden>
-            <label class="chk"><input type="radio" name="scanModo" value="congelar"> Congelar en un valor <span class="info">(una optimización, sin scan)</span></label>
+            <label class="chk"><input type="radio" name="scanModo" value="congelar"> Congelar <span class="info">(una o varias coordenadas a la vez · una optimización, sin scan)</span></label>
             <label class="chk"><input type="radio" name="scanModo" value="scan" checked> Scan relajado <span class="info">(varios valores)</span></label>
           </div>
           <div class="scan-campos" id="scanCampos" hidden>
@@ -174,11 +174,16 @@
             <label><span id="scanJTexto">Átomo j</span> <input id="scanJ" type="number" min="1" step="1" value="2"></label>
             <label id="scanKCaja"><span id="scanKTexto">Átomo k</span> <input id="scanK" type="number" min="1" step="1" value="3"></label>
             <label id="scanLCaja">Átomo l <input id="scanL" type="number" min="1" step="1" value="4"></label>
-            <label class="solo-congelar" hidden>Valor congelado (<span class="scan-u">Å</span>) <input id="scanValor" type="number" step="any"></label>
-            <label class="solo-scan">Desde (<span class="scan-u">Å</span>) <input id="scanDesde" type="number" step="any"></label>
-            <label class="solo-scan">Hasta (<span class="scan-u">Å</span>) <input id="scanHasta" type="number" step="any"></label>
-            <label class="solo-scan">Paso (<span class="scan-u">Å</span>) <input id="scanPaso" type="number" step="any" min="0.01" value="0.1"></label>
+            <label class="solo-congelar" hidden><span>Valor congelado (<span class="scan-u">Å</span>)</span> <input id="scanValor" type="number" step="any"></label>
+            <label class="solo-scan"><span>Desde (<span class="scan-u">Å</span>)</span> <input id="scanDesde" type="number" step="any"></label>
+            <label class="solo-scan"><span>Hasta (<span class="scan-u">Å</span>)</span> <input id="scanHasta" type="number" step="any"></label>
+            <label class="solo-scan"><span>Paso (<span class="scan-u">Å</span>)</span> <input id="scanPaso" type="number" step="any" min="0.01" value="0.1"></label>
             <button class="btn sec chico" id="scanDeMedida" type="button" title="Copia los átomos seleccionados con «📏 Medir» en el visor 3D">Usar átomos de «Medir»</button>
+            <button class="btn chico solo-congelar" id="congelarAgregar" type="button" hidden title="Pasa los átomos y el valor de arriba a la lista de coordenadas congeladas">➕ Agregar a la lista</button>
+          </div>
+          <div class="congelar-lista solo-congelar" hidden>
+            <label for="congelarLista">Coordenadas congeladas a la vez <span class="info">(una por línea: átomos y valor · 2 átomos = distancia, 3 = ángulo, 4 = diedro · máximo 10)</span></label>
+            <textarea id="congelarLista" rows="3" spellcheck="false" autocomplete="off" placeholder="1 2 2.320&#10;1 3 2.500&#10;1 4 1.090"></textarea>
           </div>
           <p class="nota" id="scanInfo" hidden></p>
         </fieldset>

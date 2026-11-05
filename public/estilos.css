@@ -87,7 +87,7 @@ h1, h2, h3 { margin: 0; line-height: 1.2; }
 }
 
 /* Controles */
-input[type="text"], input[type="number"], input[type="password"], select {
+input[type="text"], input[type="number"], input[type="password"], select, .congelar-lista textarea {
   font: inherit; color: var(--texto); background: var(--tarjeta);
   border: 1px solid var(--borde); border-radius: 8px; padding: 7px 9px; min-width: 0;
 }
@@ -301,3 +301,5 @@ td.asig span { display: block; font-size: .8rem; color: var(--gris); }
   .jsme-caja, .visor { height: 320px; }
   .barra-visor .grupo-btn { margin-left: 0; }
 }
+.congelar-lista { margin-top: 10px; display: grid; gap: 4px; }
+.congelar-lista textarea { width: 100%; box-sizing: border-box; font-family: ui-monospace, Consolas, monospace; font-size: 0.92rem; resize: vertical; }
