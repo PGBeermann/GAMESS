@@ -124,14 +124,15 @@ function actualizarEstimacion() {
     energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1),
     irc: dirs * ((metodo === 'hf' ? 5 : 3 * (n || 1)) + 4 * puntosIrc),
     scan: 6 * ((opcionesScanForm(true).valores || []).length || 1), // una optimización corta por punto
-    congelar: 10,
+    // el hessiano final cuesta como el de «Optimización + frecuencias»
+    congelar: 10 + ($('#congelarFrec').checked ? (metodo === 'hf' ? 5 : 3 * (n || 1)) : 0),
   }[tarea] || 1;
   actualizarInfoScan();
   actualizarSolventeUI();
   if (!pesados) { $('#estimacion').textContent = ''; return; }
   // PCM: gradientes por diferencias finitas (≈ 2·3N energías por paso) y hessianos aún más caros
   const nn = n || 1;
-  const fpcm = !solventeForm() ? 1 : tarea === 'energia' ? 1.5 : ['frecuencias', 'ts', 'irc'].includes(tarea) ? 3 * nn + nn * nn : 3 * nn;
+  const fpcm = !solventeForm() ? 1 : tarea === 'energia' ? 1.5 : ['frecuencias', 'ts', 'irc'].includes(tarea) || (tarea === 'congelar' && $('#congelarFrec').checked) ? 3 * nn + nn * nn : 3 * nn;
   const seg = 0.04 * Math.pow(Math.max(pesados, 1), 3) * fb * fm * ft * fpcm; // segundos aproximados con 4 hilos
   const nivel = seg < 40 ? 'rápido (segundos)' : seg < 240 ? 'moderado (1–4 min)' : seg < 1200 ? 'lento (4–20 min)' : 'muy lento: considere una base más pequeña o «Energía»';
   $('#estimacion').textContent = `${n} átomos (${pesados} pesados) · tiempo estimado: ${nivel}${solventeForm() ? ' (con PCM)' : ''}`;
@@ -785,7 +786,7 @@ function opcionesScanForm(silencioso = false) {
   const atomos = atomosScanForm();
   if (modoCoordenada() === 'congelar') {
     try {
-      return { restricciones: restriccionesForm() };
+      return { restricciones: restriccionesForm(), frecuencias: $('#congelarFrec').checked };
     } catch (e) {
       if (silencioso) return { restricciones: [] };
       throw e;
@@ -823,6 +824,7 @@ function ponerScanEnFormulario(scan, congelar = false) {
     $('#scanValor').value = r0.valor;
     delete $('#scanValor').dataset.auto;
     $('#congelarLista').value = lista.length > 1 ? lista.map(lineaCongelada).join('\n') : '';
+    $('#congelarFrec').checked = scan.frecuencias === true;
     estado.scanEditor = null;
     actualizarScanUI();
     return;
@@ -919,7 +921,9 @@ function actualizarScanUI() {
     } else {
       txt += `Se coloca ${tipo === 'distancia' ? 'la' : 'el'} ${c.nombre} en el valor indicado (el último átomo se mueve con todo lo que cuelga de él), se congela y se optimiza el resto de la molécula: una sola optimización, sin scan. Para congelar varias coordenadas a la vez (p. ej. tres distancias), pulse «➕ Agregar a la lista» con cada una, o escríbalas en la lista (una por línea: «1 2 2.320»).`;
     }
-    txt += ' Reemplaza al «Tipo de cálculo».';
+    txt += $('#congelarFrec').checked
+      ? ' Al final se calculan las frecuencias en esa geometría (sin liberar las coordenadas): una sola imaginaria a lo largo de la reacción indica que va por buen camino hacia el TS. Reemplaza al «Tipo de cálculo».'
+      : ' Reemplaza al «Tipo de cálculo»; para ver si va hacia un TS, marque «Calcular también las frecuencias».';
     $('#scanInfo').textContent = txt;
     return;
   }
@@ -950,7 +954,7 @@ function actualizarSolventeUI() {
   const avisos = [];
   if ($('#metodo').value === 'mp2') avisos.push('⚠ PCM en Psi4 sólo funciona con HF o DFT, no con MP2: cambie el método o elija «Sin solvente».');
   avisos.push(`${s ? `${s.nombre} (ε = ${s.epsilon})` : 'Solvente'}: modelo continuo polarizable; la cavidad es GePol con radios UFF. Al final se calcula también la energía en fase gaseosa en la misma geometría para dar la energía de solvatación.`);
-  if (['frecuencias', 'ts', 'irc'].includes(tarea)) avisos.push('Psi4 no tiene gradientes ni hessianos analíticos con PCM: el hessiano se obtiene por diferencias finitas de energías, lo que es MUY lento salvo en moléculas pequeñas.');
+  if (['frecuencias', 'ts', 'irc'].includes(tarea) || (tarea === 'congelar' && $('#congelarFrec').checked)) avisos.push('Psi4 no tiene gradientes ni hessianos analíticos con PCM: el hessiano se obtiene por diferencias finitas de energías, lo que es MUY lento salvo en moléculas pequeñas.');
   else if (tarea !== 'energia') avisos.push('Psi4 no tiene gradientes analíticos con PCM: cada paso de la optimización usa diferencias finitas de energías (bastante más lento que en fase gaseosa).');
   $('#notaPcm').textContent = avisos.join(' ');
 }
@@ -1429,6 +1433,12 @@ function interpretarImaginarias(tarea, n) {
     if (n === 0) return 'No es un TS: la búsqueda llegó a un mínimo. Parta de una geometría más cercana al TS';
     return `Punto de silla de orden ${n}: no es un TS simple. Desplace la geometría a lo largo de los modos imaginarios sobrantes`;
   }
+  if (tarea === 'congelar') {
+    // Hessiano en la geometría con coordenadas congeladas (no es un punto estacionario)
+    if (n === 1) return 'Buen camino hacia el TS: anime el modo imaginario y compruebe que mueve los átomos de la reacción (enlaces que se forman o se rompen); si es así, use «Buscar el TS desde esta geometría»';
+    if (n === 0) return 'Sin frecuencias imaginarias: esta geometría está en un valle, no cerca del TS. Acerque los valores congelados a los del TS (p. ej. alargue los enlaces que se rompen)';
+    return `${n} frecuencias imaginarias: además del modo de reacción hay otros (rotaciones internas, deformaciones). Anímelos; si sólo uno es de la reacción, puede intentar «Buscar el TS» o congelar otra coordenada`;
+  }
   if (!n) return 'Mínimo de energía confirmado';
   return 'No es un mínimo: la optimización terminó en un punto de silla (el gradiente es ~0 por simetría). '
     + 'Si es un estado de transición, use el tipo «Estado de transición (TS)»; si busca un mínimo, rompa la simetría de la geometría';
@@ -1446,6 +1456,7 @@ function panelResumen(t, r) {
     ${r.iboview?.orbitales ? '<button class="btn sec chico" type="button" data-guardar="molden" title="Función de onda en formato Molden (IboView, Avogadro, Jmol…)">Descargar .molden</button>' : ''}
     ${r.iboview?.puntos_molden?.length ? `<button class="btn chico" type="button" data-guardar="molden-puntos" title="Un .molden por punto, con un nombre base y numeración en la carpeta que elija">Guardar ${r.iboview.puntos_molden.length} .molden numerados…</button>` : ''}
     ${r.tarea === 'ts' && f?.n_imaginarias === 1 ? '<button class="btn chico" type="button" id="lanzarIRC" title="Sigue el camino de mínima energía desde este TS hacia reactivos y productos">Calcular IRC desde este TS</button>' : ''}
+    ${r.tarea === 'congelar' && f?.n_imaginarias >= 1 ? '<button class="btn chico" type="button" id="lanzarTS" title="Busca el estado de transición sin restricciones partiendo de esta geometría (TS + frecuencias)">Buscar el TS desde esta geometría</button>' : ''}
   </div><div class="cifras">`;
   const sv = r.solvatacion;
   html += cifra(({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: `Energía (${r.congelado?.restricciones?.length > 1 ? 'coordenadas congeladas' : 'coordenada congelada'})` }[r.tarea] || 'Energía total') + (sv ? ' en solución' : ''), `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
@@ -1496,7 +1507,7 @@ function panelResumen(t, r) {
   if (th?.zpve != null) html += cifra('Energía de punto cero', `${fx(th.zpve * HARTREE_KCAL, 2)} kcal/mol`, `${fx(th.zpve, 6)} E<sub>h</sub>`);
   if (th?.entalpia != null) html += cifra('Entalpía H (298 K)', `${fx(th.entalpia, 6)} E<sub>h</sub>`);
   if (th?.energia_libre_gibbs != null) html += cifra('Energía libre G (298 K)', `${fx(th.energia_libre_gibbs, 6)} E<sub>h</sub>`);
-  html += cifra('Nivel de teoría', `${esc(nombreDe('metodos', r.metodo))}/${esc(nombreDe('bases', r.base))}`, `${esc(nombreDe('tareas', r.tarea))}`);
+  html += cifra('Nivel de teoría', `${esc(nombreDe('metodos', r.metodo))}/${esc(nombreDe('bases', r.base))}`, `${esc(nombreDe('tareas', r.tarea))}${r.congelado?.frecuencias ? ' + frecuencias' : ''}`);
   html += cifra('Sistema', `${esc(t.formula || '')}`, `carga ${r.carga} · multiplicidad ${r.multiplicidad} · ${o.n_funciones_base ?? '?'} funciones de base`);
   html += cifra('Tiempo de cálculo', `${fx(r.tiempo_s, 1)} s`, `Psi4 ${esc(r.psi4_version || '')}`);
   html += '</div>';
@@ -1686,7 +1697,11 @@ function panelVibraciones(r) {
     const n = (r.geometria_xyz || '').trim().split('\n').length;
     panel.innerHTML = n < 2
       ? '<p class="nota">Un átomo aislado no tiene modos de vibración.</p>'
-      : `<p class="nota">Este cálculo no incluyó frecuencias, por eso no hay espectro IR ni modos de vibración.</p>
+      : r.congelado
+        ? `<p class="nota">Este cálculo no incluyó frecuencias, por eso no hay espectro IR ni modos de vibración.</p>
+         <button class="btn" type="button" id="calcFrecuencias">Calcular frecuencias con las mismas coordenadas congeladas (${esc(nombreDe('metodos', r.metodo))}/${esc(nombreDe('bases', r.base))})</button>
+         <p class="nota">Se parte de esta geometría, se vuelve a optimizar con las mismas coordenadas congeladas (pocos pasos) y se calcula el hessiano en esa geometría, sin liberarlas. Una sola frecuencia imaginaria a lo largo de la reacción indica que va por buen camino hacia el TS.</p>`
+        : `<p class="nota">Este cálculo no incluyó frecuencias, por eso no hay espectro IR ni modos de vibración.</p>
          <button class="btn" type="button" id="calcFrecuencias">Calcular frecuencias de esta molécula (${esc(nombreDe('metodos', r.metodo))}/${esc(nombreDe('bases', r.base))})</button>
          <p class="nota">Se parte de la geometría ${r.tarea === 'energia' ? 'de este cálculo' : 'ya optimizada'}; Psi4 la reoptimiza (pocos pasos) y calcula el hessiano. Los resultados se abren aquí al terminar.</p>`;
     panel.onclick = (ev) => { if (ev.target.id === 'calcFrecuencias') calcularFrecuencias(ev.target); };
@@ -1853,7 +1868,15 @@ function pasarModo(paso) {
   animarModo(modos[(i + paso + modos.length) % modos.length].numero);
 }
 
-async function calcularFrecuencias(boton) {
+// Coordenadas congeladas de un resultado (los antiguos traen una sola, sin lista)
+function restriccionesDeResultado(r) {
+  const cg = r.congelado;
+  if (!cg) return null;
+  return (cg.restricciones || [cg]).map((x) => ({ tipo: x.tipo, atomos: x.atomos, valor: x.valor }));
+}
+
+// Lanza un cálculo nuevo desde la geometría de este resultado (mismo método, base, carga y solvente)
+async function lanzarDesdeResultado(boton, sufijo, opciones) {
   const t = estado.infoTrabajo;
   const r = estado.resultado;
   boton.disabled = true;
@@ -1862,10 +1885,11 @@ async function calcularFrecuencias(boton) {
       method: 'POST',
       body: JSON.stringify({
         xyz: r.geometria_xyz, formula: t.formula, smiles: t.smiles || '',
-        titulo: `${t.titulo} (frecuencias)`.slice(0, 80),
-        metodo: r.metodo, base: r.base, tarea: 'frecuencias',
+        titulo: `${t.titulo} (${sufijo})`.slice(0, 80),
+        metodo: r.metodo, base: r.base,
         carga: r.carga, multiplicidad: r.multiplicidad, mep: (r.cubos || []).includes('mep'),
         solvente: r.solvatacion?.solvente || 'ninguno', modelo_pcm: r.solvatacion?.modelo, // mismo solvente que el cálculo original
+        ...opciones,
       }),
     });
     guardarEnHistorial(nuevo);
@@ -1874,6 +1898,19 @@ async function calcularFrecuencias(boton) {
     alert(e.message);
     boton.disabled = false;
   }
+}
+
+// Frecuencias de este resultado. Si tenía coordenadas congeladas, se repite con las mismas
+// restricciones y el hessiano al final: no se reoptimiza libremente (eso las liberaría).
+function calcularFrecuencias(boton) {
+  const restricciones = restriccionesDeResultado(estado.resultado);
+  if (restricciones) return lanzarDesdeResultado(boton, 'frecuencias', { tarea: 'congelar', scan: { restricciones, frecuencias: true } });
+  return lanzarDesdeResultado(boton, 'frecuencias', { tarea: 'frecuencias' });
+}
+
+// Desde la geometría con coordenadas congeladas (aproximación al TS) se busca el TS sin restricciones
+function buscarTSDesdeResultado(boton) {
+  return lanzarDesdeResultado(boton, 'TS', { tarea: 'ts' });
 }
 
 function panelOptimizacion(r) {
@@ -2394,6 +2431,7 @@ function eventos() {
   $('#scanValor').addEventListener('input', (e) => { delete e.target.dataset.auto; actualizarEstimacion(); });
   $('#congelarAgregar').addEventListener('click', agregarCongelada);
   $('#congelarLista').addEventListener('input', actualizarEstimacion);
+  $('#congelarFrec').addEventListener('change', actualizarEstimacion);
   $('#dlgMoldenBase').addEventListener('input', vistaMolden);
   $('#dlgMoldenForm').addEventListener('submit', (e) => { e.preventDefault(); guardarMoldenNumerados(); });
   $('#dlgMoldenCerrar').addEventListener('click', () => $('#dlgMolden').close());
@@ -2451,6 +2489,7 @@ function eventos() {
     const guardar = e.target.closest('[data-guardar]');
     if (guardar) { guardarArchivoTrabajo(guardar.dataset.guardar); return; }
     if (e.target.id === 'lanzarIRC') { calcularIRC(e.target); return; }
+    if (e.target.id === 'lanzarTS') { buscarTSDesdeResultado(e.target); return; }
     const b = e.target.closest('[data-ver-sup]');
     if (b) { $('#superficie').value = b.dataset.verSup; ajustarDeslizador(); mostrarSuperficie(); $('#visor').scrollIntoView({ behavior: 'smooth', block: 'center' }); }
     if (e.target.id === 'verCargas') {

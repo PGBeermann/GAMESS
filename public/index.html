@@ -184,6 +184,7 @@
           <div class="congelar-lista solo-congelar" hidden>
             <label for="congelarLista">Coordenadas congeladas a la vez <span class="info">(una por línea: átomos y valor · 2 átomos = distancia, 3 = ángulo, 4 = diedro · máximo 10)</span></label>
             <textarea id="congelarLista" rows="3" spellcheck="false" autocomplete="off" placeholder="1 2 2.320&#10;1 3 2.500&#10;1 4 1.090"></textarea>
+            <label class="chk"><input type="checkbox" id="congelarFrec"> Calcular también las frecuencias <span class="info">(hessiano en la geometría final, sin liberar las coordenadas: una sola imaginaria indica que va por buen camino hacia el TS)</span></label>
           </div>
           <p class="nota" id="scanInfo" hidden></p>
         </fieldset>

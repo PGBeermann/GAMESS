@@ -71,7 +71,16 @@ el potencial electrostático y las vibraciones.
      .out termina con «OPTIMIZACIÓN CON N COORDENADAS CONGELADAS». Al leer un .in sin bucle se
      toman todas las `fixed_*` (átomos + valor), `frozen_*` (valor de `colocar(…)`, de la lista
      `congeladas = […]` o de la geometría) y `ranged_*` (centro del intervalo). En la API:
-     `"scan": {"restricciones": [{"tipo": "distancia", "atomos": [1, 2], "valor": 2.32}, …]}`.
+     `"scan": {"restricciones": [{"tipo": "distancia", "atomos": [1, 2], "valor": 2.32}, …], "frecuencias": true}`.
+     - **Frecuencias con coordenadas congeladas** (para acercarse a un TS): marque «Calcular
+       también las frecuencias». Tras la optimización restringida se calcula el hessiano en esa
+       misma geometría, **sin volver a optimizar libremente** (eso liberaría las coordenadas). No es
+       un punto estacionario, pero una sola frecuencia imaginaria cuyo modo mueve los átomos de la
+       reacción indica que se va por buen camino; ninguna indica un valle. El botón «Calcular
+       frecuencias» de un resultado congelado repite el cálculo con las mismas restricciones y, si
+       hay imaginarias, «Buscar el TS desde esta geometría» lanza la búsqueda de TS sin
+       restricciones. Ejemplo ([Cl–CH₃–Br]⁻, HF/6-31G*, C–Cl 2.32, C–Br 2.50, C–H 1.09 Å): una
+       imaginaria de −402 cm⁻¹ y, desde ahí, el TS con una imaginaria de −389 cm⁻¹.
    - **Solvente (PCM, PCMSolver)**: «Sin solvente (fase gaseosa)» por defecto, o uno de los 20
      solventes predefinidos de PCMSolver (agua, carbonato de propileno, DMSO, nitrometano,
      acetonitrilo, metanol, etanol, acetona, 1,2-dicloroetano, diclorometano, THF, anilina,

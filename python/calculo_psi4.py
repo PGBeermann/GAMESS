@@ -1000,9 +1000,19 @@ def main():
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         elif tarea == "congelar":
             # Una o varias coordenadas congeladas a la vez, en una sola optimización
-            datos = optimizar_congelada(metodo, mol, restricciones_validas(entrada.get("scan") or {}, n_atomos))
+            op = entrada.get("scan") or {}
+            datos = optimizar_congelada(metodo, mol, restricciones_validas(op, n_atomos))
             resultado["congelado"] = {k: datos[k] for k in ("restricciones", "energia", "convergio", "nota")}
             resultado["trayectoria"] = datos["pasos"]
+            if op.get("frecuencias"):
+                # Hessiano en la geometría con las coordenadas congeladas, sin volver a optimizar sin
+                # restricciones (eso las liberaría). No es un punto estacionario: las frecuencias de los
+                # modos ligados a las coordenadas congeladas pueden salir imaginarias o muy bajas.
+                resultado["congelado"]["frecuencias"] = True
+                etapa("Calculando frecuencias vibracionales (hessiano) con las coordenadas congeladas")
+                _, wfn_freq = psi4.frequency(metodo, return_wfn=True, molecule=mol)
+                etapa("Analizando modos normales y termoquímica")
+                resultado["frecuencias"] = frecuencias(wfn_freq, geometria_actual(mol)[0])
             etapa("Calculando la función de onda en la geometría optimizada")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         elif tarea == "scan":

@@ -131,7 +131,7 @@ function opcionesCongelar(o = {}, natomos = 0) {
     vistas.add(clave);
     return { tipo, atomos, valor: Math.round(valor * 10000) / 10000 };
   });
-  return { restricciones };
+  return { restricciones, frecuencias: o.frecuencias === true }; // frecuencias: hessiano al final, sin liberar las coordenadas
 }
 
 // Opciones del IRC (dirección, puntos por dirección y tamaño de paso en bohr·amu^½), acotadas

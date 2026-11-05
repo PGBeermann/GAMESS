@@ -252,6 +252,8 @@
     if (opcionesScan) {
       tarea = opcionesScan.congelar ? 'congelar' : 'scan';
       delete opcionesScan.congelar;
+      // frequency(…) tras la optimización con coordenadas congeladas: hessiano en esa geometría
+      if (tarea === 'congelar' && hayFreq) opcionesScan.frecuencias = true;
     } else if (esIRC) {
       if (!hayOpt) throw new Error('«opt_type irc» necesita una llamada optimize(…): el IRC lo recorre el optimizador.');
       tarea = 'irc';
@@ -526,6 +528,11 @@
       `psi4.set_options({${opciones}})`,
       `E, wfn = optimize('${metodo}', return_wfn=True)`,
       `psi4.set_options({${Object.keys(porOpcion).map((k) => `'${k}': ''`).join(', ')}})`,
+      ...(scan?.frecuencias ? [
+        '# Frecuencias en esta misma geometría (sin volver a optimizar, para no liberar las coordenadas):',
+        '# una sola frecuencia imaginaria a lo largo de la reacción indica que se va por buen camino hacia el TS.',
+        `E, wfn = frequency('${metodo}', return_wfn=True)`,
+      ] : []),
       '',
       `x = ${nombre}.geometry().np * psi4.constants.bohr2angstroms`,
       `psi4.core.print_out("\\n\\n===== OPTIMIZACIÓN CON ${varias ? `${lista.length} COORDENADAS CONGELADAS` : `${lista[0].c.simbolo}(${lista[0].etq}) CONGELADA`} =====\\n")`,
@@ -675,7 +682,7 @@
     const modeloPcm = solv && MODELOS_PCM.includes(pcm.modelo) ? pcm.modelo : 'IEFPCM';
     return [
       `# Entrada de Psi4 generada por «Química Cuántica con Psi4» (UNACHI) — ${f}`,
-      `# ${titulo} · ${metodo.toUpperCase()}/${base} · ${NOMBRE_TAREA[tarea] || tarea}${solv ? ` · en ${solv.nombre} (PCM)` : ' · fase gaseosa'}`,
+      `# ${titulo} · ${metodo.toUpperCase()}/${base} · ${NOMBRE_TAREA[tarea] || tarea}${tarea === 'congelar' && scan?.frecuencias ? ' + frecuencias' : ''}${solv ? ` · en ${solv.nombre} (PCM)` : ' · fase gaseosa'}`,
       '# Ejecutar con:  psi4 archivo.in archivo.out',
       '',
       `memory ${memoria}`,
