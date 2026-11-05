@@ -124,7 +124,7 @@ function actualizarEstimacion() {
     energia: 1, optimizacion: 10, frecuencias: metodo === 'hf' ? 15 : 10 + 3 * (n || 1), ts: metodo === 'hf' ? 30 : 15 + 6 * (n || 1),
     irc: dirs * ((metodo === 'hf' ? 5 : 3 * (n || 1)) + 4 * puntosIrc),
     scan: 6 * (opcionesScanForm(true).valores.length || 1), // una optimización corta por punto
-    congelar: 10 * (opcionesScanForm(true).valores.length || 1), // una optimización completa por valor
+    congelar: 10,
   }[tarea] || 1;
   actualizarInfoScan();
   actualizarSolventeUI();
@@ -714,12 +714,12 @@ function opcionesScanForm(silencioso = false) {
   const c = SCAN_UI[tipo];
   const atomos = atomosScanForm();
   if (modoCoordenada() === 'congelar') {
-    try {
-      return { tipo, atomos, valores: valoresCongelar($('#scanValor').value, c) };
-    } catch (e) {
+    const v = parseFloat($('#scanValor').value);
+    if (!Number.isFinite(v)) {
       if (silencioso) return { tipo, atomos, valores: [] };
-      throw e;
+      throw new Error(`Coordenada congelada: indique el valor (${c.unidad}).`);
     }
+    return { tipo, atomos, valores: [+v.toFixed(4)] };
   }
   if (estado.scanEditor && estado.scanEditor.firma === firmaScan()) return { tipo, atomos, valores: estado.scanEditor.valores };
   const desde = parseFloat($('#scanDesde').value); const hasta = parseFloat($('#scanHasta').value);
@@ -732,19 +732,6 @@ function opcionesScanForm(silencioso = false) {
   const signo = hasta >= desde ? 1 : -1;
   const valores = Array.from({ length: Math.min(n, 40) }, (_, k) => +(desde + signo * k * paso).toFixed(4));
   return { tipo, atomos, valores, recortado: n > 40 };
-}
-
-// Valores de la coordenada congelada: uno o varios (máximo 20) separados por «;», «,» o espacios,
-// con punto decimal; sin repetir y en orden creciente (una optimización independiente por valor)
-const MAX_CONGELAR = 20;
-function valoresCongelar(texto, c) {
-  const fichas = String(texto || '').trim().split(/[;,\s]+/).filter(Boolean);
-  if (!fichas.length) throw new Error(`Coordenada congelada: indique el valor o los valores (${c.unidad}).`);
-  const malo = fichas.find((f) => !/^[-+]?(\d+\.?\d*|\.\d+)$/.test(f));
-  if (malo) throw new Error(`Coordenada congelada: «${malo}» no es un número (use punto decimal y separe los valores con «;»).`);
-  const valores = [...new Set(fichas.map((f) => +Number(f).toFixed(4)))].sort((a, b) => a - b);
-  if (valores.length > MAX_CONGELAR) throw new Error(`Coordenada congelada: máximo ${MAX_CONGELAR} valores (hay ${valores.length}).`);
-  return valores;
 }
 
 // Rango inicial razonable alrededor del valor actual
@@ -761,7 +748,7 @@ function ponerScanEnFormulario(scan, congelar = false) {
   scan.atomos.forEach((a, k) => { $(CAMPOS_ATOMOS[k]).value = a; });
   const v = scan.valores;
   if (congelar) {
-    $('#scanValor').value = v.join('; ');
+    $('#scanValor').value = v[0];
     delete $('#scanValor').dataset.auto;
     estado.scanEditor = null;
     actualizarScanUI();
@@ -836,20 +823,9 @@ function actualizarScanUI() {
   const fmt = (v) => (tipo === 'distancia' ? `${v.toFixed(3)} Å` : `${v.toFixed(1)}°`);
   let txt = actual ? `${c.simbolo}(${actual.etq}) actual = ${fmt(actual.v)}. ` : `Elija ${c.natom} átomos distintos entre 1 y ${nat || '?'} (active «Etiquetas» o use «📏 Medir» en el visor para ver la numeración). `;
   if (congelar) {
-    const art = tipo === 'distancia' ? 'la' : 'el';
-    let valores = [];
-    try {
-      valores = valoresCongelar(campoValor.value, c);
-    } catch (e) {
-      if (campoValor.value.trim()) txt += `⚠ ${e.message} `;
-    }
-    if (valores.some((v) => v < c.min || v > c.max)) txt += `⚠ Los valores deben estar entre ${c.min} y ${c.max} ${c.unidad}. `;
-    if (valores.length > 1) {
-      txt += `${valores.length} valores: ${valores.join(', ')} ${c.unidad}. Para cada valor se coloca ${art} ${c.nombre} (el último átomo se mueve con todo lo que cuelga de él), se congela y se optimiza el resto de la molécula: ${valores.length} optimizaciones independientes, todas desde la geometría de partida. `;
-    } else {
-      txt += `Se coloca ${art} ${c.nombre} en el valor indicado (el último átomo se mueve con todo lo que cuelga de él), se congela y se optimiza el resto de la molécula: una sola optimización, sin scan. `;
-    }
-    txt += `Para varios valores, sepárelos con «;» (máximo ${MAX_CONGELAR}). Reemplaza al «Tipo de cálculo».`;
+    const v = parseFloat($('#scanValor').value);
+    if (Number.isFinite(v) && (v < c.min || v > c.max)) txt += `⚠ El valor debe estar entre ${c.min} y ${c.max} ${c.unidad}. `;
+    txt += `Se coloca ${tipo === 'distancia' ? 'la' : 'el'} ${c.nombre} en el valor indicado (el último átomo se mueve con todo lo que cuelga de él), se congela y se optimiza el resto de la molécula: una sola optimización, sin scan. Reemplaza al «Tipo de cálculo».`;
     $('#scanInfo').textContent = txt;
     return;
   }
@@ -1302,9 +1278,7 @@ function mostrarError(t) {
 function etiquetaModeloResultado() {
   const t = estado.infoTrabajo;
   if (!t) return;
-  const varios = t.tarea === 'congelar' && estado.resultado?.scan; // coordenada congelada en varios valores
-  const tipo = varios ? 'valor congelado de menor energía'
-    : { energia: 'geometría de entrada', ts: 'estado de transición', irc: 'estado de transición (inicio del IRC)', scan: 'punto de menor energía del scan' }[t.tarea] || 'geometría optimizada';
+  const tipo = { energia: 'geometría de entrada', ts: 'estado de transición', irc: 'estado de transición (inicio del IRC)', scan: 'punto de menor energía del scan' }[t.tarea] || 'geometría optimizada';
   $('#etiquetaModelo').textContent = `${t.titulo} · ${nombreDe('metodos', t.metodo)}/${nombreDe('bases', t.base)} · ${tipo}`;
 }
 
@@ -1332,7 +1306,7 @@ function mostrarResultado(t) {
     $('#tabOpt').textContent = 'Camino IRC';
     panelIRC(t, r);
   } else if (r.scan?.puntos?.length) {
-    $('#tabOpt').textContent = r.scan.congelar ? 'Valores congelados' : 'Scan';
+    $('#tabOpt').textContent = 'Scan';
     panelScan(t, r);
   } else {
     $('#tabOpt').textContent = 'Optimización';
@@ -1380,7 +1354,7 @@ function panelResumen(t, r) {
     ${r.tarea === 'ts' && f?.n_imaginarias === 1 ? '<button class="btn chico" type="button" id="lanzarIRC" title="Sigue el camino de mínima energía desde este TS hacia reactivos y productos">Calcular IRC desde este TS</button>' : ''}
   </div><div class="cifras">`;
   const sv = r.solvatacion;
-  html += cifra(({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: r.scan ? 'Energía en el valor más estable' : 'Energía (coordenada congelada)' }[r.tarea] || 'Energía total') + (sv ? ' en solución' : ''), `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
+  html += cifra(({ irc: 'Energía del TS', scan: 'Energía en el mínimo del scan', congelar: 'Energía (coordenada congelada)' }[r.tarea] || 'Energía total') + (sv ? ' en solución' : ''), `${fx(e.hartree, 8)} E<sub>h</sub>`, `${fx(e.kcal_mol, 2)} kcal/mol · ${fx(e.ev, 3)} eV`);
   if (sv) {
     html += cifra('Solvente (PCM)', esc(sv.nombre), `ε = ${sv.epsilon ?? '?'} · ${esc(sv.modelo)} · ${esc(sv.cavidad || '')}`);
     if (sv.solvatacion_kcal != null) {
@@ -1402,17 +1376,10 @@ function panelResumen(t, r) {
     const S = sc.simbolo || 'R'; const U = sc.unidad || 'Å'; const dec = U === 'Å' ? 3 : 1;
     const v = sc.puntos.map((p) => p.valor ?? p.r);
     const nombreTipo = { distancia: 'distancia', angulo: 'ángulo', diedro: 'diedro' }[sc.tipo || 'distancia'];
-    if (sc.congelar) {
-      html += cifra(`${nombreTipo[0].toUpperCase()}${nombreTipo.slice(1)} ${S}(${esc(sc.etiqueta)}) congelad${sc.tipo === 'distancia' ? 'a' : 'o'}`, `${v.length} valores`, `${v.map((x) => fx(x, dec)).join(', ')} ${U} · una optimización independiente por valor`);
-      html += cifra('Valor más estable', `${S} = ${fx(sc.valor_minimo, dec)} ${U}`, 'Geometría usada para orbitales, cargas y superficies');
-      html += cifra('Valor menos estable', `${S} = ${fx(sc.valor_maximo, dec)} ${U}`, `${fx(sc.rango_kcal, 2)} kcal/mol por encima del más estable`);
-      if (sc.no_convergidos) html += cifra('Valores sin converger', String(sc.no_convergidos), 'Marcados en naranja en la pestaña «Valores congelados»');
-    } else {
-      html += cifra(`Scan de ${nombreTipo} ${S}(${esc(sc.etiqueta)})`, `${v.length} punto(s)`, `de ${fx(v[0], dec)} a ${fx(v[v.length - 1], dec)} ${U}`);
-      html += cifra('Mínimo del scan', `${S} = ${fx(sc.valor_minimo ?? sc.r_minimo, dec)} ${U}`, 'Geometría usada para orbitales, cargas y superficies');
-      html += cifra('Máximo del scan', `${S} = ${fx(sc.valor_maximo ?? sc.r_maximo, dec)} ${U}`, `${fx(sc.rango_kcal, 2)} kcal/mol por encima del mínimo`);
-      if (sc.no_convergidos) html += cifra('Puntos sin converger', String(sc.no_convergidos), 'Marcados en naranja en la pestaña «Scan»');
-    }
+    html += cifra(`Scan de ${nombreTipo} ${S}(${esc(sc.etiqueta)})`, `${v.length} punto(s)`, `de ${fx(v[0], dec)} a ${fx(v[v.length - 1], dec)} ${U}`);
+    html += cifra('Mínimo del scan', `${S} = ${fx(sc.valor_minimo ?? sc.r_minimo, dec)} ${U}`, 'Geometría usada para orbitales, cargas y superficies');
+    html += cifra('Máximo del scan', `${S} = ${fx(sc.valor_maximo ?? sc.r_maximo, dec)} ${U}`, `${fx(sc.rango_kcal, 2)} kcal/mol por encima del mínimo`);
+    if (sc.no_convergidos) html += cifra('Puntos sin converger', String(sc.no_convergidos), 'Marcados en naranja en la pestaña «Scan»');
   }
   const irc = r.irc;
   if (irc) {
@@ -1966,9 +1933,6 @@ function panelScan(t, r) {
   const sc = r.scan;
   const S = sc.simbolo || 'R'; const U = sc.unidad || 'Å'; const dec = U === 'Å' ? 3 : 1;
   const nombreTipo = { distancia: 'la distancia', angulo: 'el ángulo', diedro: 'el diedro' }[sc.tipo || 'distancia'];
-  // Coordenada congelada en varios valores: misma vista que el scan, con sus propios rótulos
-  const cg = !!sc.congelar;
-  const textoReproducir = cg ? '▶ Recorrer valores' : '▶ Reproducir scan';
   const todos = sc.puntos.map((p) => ({ ...p, v: p.valor ?? p.r, vf: p.valor_final ?? p.r_final }));
   const pts = todos.filter((p) => p.energia != null);
   const W = 760; const H = 280; const m = { l: 62, r: 16, t: 18, b: 44 };
@@ -1977,7 +1941,7 @@ function panelScan(t, r) {
   const ymin = 0; const ymax = Math.max(...ys, 0.1);
   const X = (s) => (xmax > xmin ? m.l + ((s - xmin) / (xmax - xmin)) * (W - m.l - m.r) : (W + m.l) / 2);
   const Y = (v) => H - m.b - ((v - ymin) / (ymax - ymin)) * (H - m.t - m.b);
-  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="${cg ? 'Energía de cada valor congelado' : 'Energía del scan relajado'}">`;
+  let svg = `<svg class="grafico" viewBox="0 0 ${W} ${H}" role="img" aria-label="Energía del scan relajado">`;
   for (let k = 0; k <= 4; k++) {
     const v = ymin + (k / 4) * (ymax - ymin);
     svg += `<line class="rejilla" x1="${m.l}" x2="${W - m.r}" y1="${Y(v)}" y2="${Y(v)}"/><text x="${m.l - 6}" y="${Y(v) + 4}" text-anchor="end">${v.toFixed(1)}</text>`;
@@ -1993,19 +1957,17 @@ function panelScan(t, r) {
   svg += '</svg>';
   panel.innerHTML = `${svg}
     <div class="controles-fila">
-      <button class="btn sec chico" type="button" id="reproducirOpt">${textoReproducir}</button>
-      ${r.iboview?.puntos_molden?.length ? `<button class="btn chico" type="button" data-guardar="molden-puntos" title="Un .molden por ${cg ? 'valor congelado' : 'punto del scan'}, con nombre base y numeración, en la carpeta que elija">Guardar .molden numerados…</button>` : ''}
-      <label>${cg ? 'Valor' : 'Punto'} <input type="range" id="pasoOpt" min="0" max="${pts.length - 1}" value="0"></label>
+      <button class="btn sec chico" type="button" id="reproducirOpt">▶ Reproducir scan</button>
+      ${r.iboview?.puntos_molden?.length ? '<button class="btn chico" type="button" data-guardar="molden-puntos" title="Un .molden por punto del scan, con nombre base y numeración, en la carpeta que elija">Guardar .molden numerados…</button>' : ''}
+      <label>Punto <input type="range" id="pasoOpt" min="0" max="${pts.length - 1}" value="0"></label>
       <button class="btn sec chico" type="button" id="bajarScanCSV">Tabla CSV</button>
-      <button class="btn sec chico" type="button" id="bajarScanXYZ" title="Todas las geometrías ${cg ? 'optimizadas' : 'del scan'} como XYZ de varios cuadros (Avogadro, Jmol, VMD)">XYZ animado</button>
+      <button class="btn sec chico" type="button" id="bajarScanXYZ" title="Todas las geometrías del scan como XYZ de varios cuadros (Avogadro, Jmol, VMD)">XYZ animado</button>
       <span id="infoPaso" class="nota"></span>
     </div>
     <div class="tabla-scroll"><table><thead><tr><th class="num">${S} (${U})</th><th class="num">${S} final (${U})</th><th class="num">E (E<sub>h</sub>)</th><th class="num">ΔE vs. 1.º (kcal/mol)</th><th class="num">ΔE vs. mín (kcal/mol)</th><th></th></tr></thead><tbody>
       ${todos.map((p, i) => `<tr data-fila="${i}"><td class="num">${p.v.toFixed(dec)}</td><td class="num">${fx(p.vf, dec + 1)}</td><td class="num">${fx(p.energia, 8)}</td><td class="num">${fx(p.de_kcal, 3)}</td><td class="num">${fx(p.de_min_kcal, 3)}</td><td>${p.convergio ? (p.nota ? `<span class="info" title="${esc(p.nota)}">≈ convergió en energía</span>` : '') : `<span class="aviso-chico" title="${esc(p.nota)}">no convergió</span>`}</td></tr>`).join('')}
     </tbody></table></div>
-    <p class="nota">${cg
-    ? `Cada valor es una optimización independiente desde la geometría de partida: ${nombreTipo} ${esc(sc.etiqueta)} queda congelad${sc.tipo === 'distancia' ? 'a' : 'o'} y el resto de la molécula se optimiza. La misma tabla está al final de la salida de Psi4 (.out), en «OPTIMIZACIONES CON … CONGELADA».`
-    : `En cada punto ${nombreTipo} ${esc(sc.etiqueta)} queda fijo y el resto de la molécula se optimiza. La misma tabla está al final de la salida de Psi4 (.out), en «SCAN RELAJADO».`}</p>`;
+    <p class="nota">En cada punto ${nombreTipo} ${esc(sc.etiqueta)} queda fijo y el resto de la molécula se optimiza. La misma tabla está al final de la salida de Psi4 (.out), en «SCAN RELAJADO».</p>`;
   const verPaso = (i) => {
     i = Math.max(0, Math.min(pts.length - 1, i));
     const p = pts[i];
@@ -2020,9 +1982,9 @@ function panelScan(t, r) {
     v.removeAllModels();
     v.addModel(xyzCompleto(p.xyz), 'xyz');
     aplicarEstilo();
-    $('#etiquetaModelo').textContent = `${cg ? 'Valor congelado' : 'Scan · punto'} ${i + 1} de ${pts.length} · ${S}(${sc.etiqueta}) = ${p.v.toFixed(dec)} ${U}`;
+    $('#etiquetaModelo').textContent = `Scan · punto ${i + 1} de ${pts.length} · ${S}(${sc.etiqueta}) = ${p.v.toFixed(dec)} ${U}`;
   };
-  const detener = () => { clearInterval(estado.reproductor); estado.reproductor = null; $('#reproducirOpt').textContent = textoReproducir; };
+  const detener = () => { clearInterval(estado.reproductor); estado.reproductor = null; $('#reproducirOpt').textContent = '▶ Reproducir scan'; };
   $('#pasoOpt').addEventListener('input', (e) => { detener(); verPaso(parseInt(e.target.value, 10)); });
   panel.querySelector('svg').addEventListener('click', (e) => {
     const c = e.target.closest('[data-paso]');
@@ -2043,16 +2005,16 @@ function panelScan(t, r) {
   $('#bajarScanCSV').addEventListener('click', () => {
     const filas = [[U === 'Å' ? 'R_A' : `${sc.tipo}_grados`, U === 'Å' ? 'R_final_A' : `${sc.tipo}_final_grados`, 'E_Eh', 'dE_primero_kcal_mol', 'dE_minimo_kcal_mol', 'convergio']];
     todos.forEach((p) => filas.push([p.v.toFixed(4), fx(p.vf, 5), fx(p.energia, 10), fx(p.de_kcal, 4), fx(p.de_min_kcal, 4), p.convergio ? 'si' : 'no']));
-    descargar(filas.map((f) => f.join(',')).join('\n') + '\n', `${nombreSeguro(t.titulo)}_${cg ? 'congelada' : 'scan'}.csv`, 'text/csv');
+    descargar(filas.map((f) => f.join(',')).join('\n') + '\n', `${nombreSeguro(t.titulo)}_scan.csv`, 'text/csv');
   });
   $('#bajarScanXYZ').addEventListener('click', () => {
     const marcos = pts.map((p) => {
       const l = p.xyz.trim().split(/\r?\n/);
-      return `${l.length}\n${cg ? 'Congelada' : 'Scan'} ${S}(${sc.etiqueta}) = ${p.v.toFixed(4)} ${U === 'Å' ? 'A' : 'grados'}  E = ${p.energia.toFixed(8)}\n${l.join('\n')}`;
+      return `${l.length}\nScan ${S}(${sc.etiqueta}) = ${p.v.toFixed(4)} ${U === 'Å' ? 'A' : 'grados'}  E = ${p.energia.toFixed(8)}\n${l.join('\n')}`;
     });
-    descargar(`${marcos.join('\n')}\n`, `${nombreSeguro(t.titulo)}_${cg ? 'congelada' : 'scan'}.xyz`);
+    descargar(`${marcos.join('\n')}\n`, `${nombreSeguro(t.titulo)}_scan.xyz`);
   });
-  $('#infoPaso').textContent = `Pulse un punto o «${textoReproducir.slice(2)}».`;
+  $('#infoPaso').textContent = 'Pulse un punto o «Reproducir scan».';
 }
 
 // Lanza un IRC desde la geometría del TS de este resultado
@@ -2084,18 +2046,17 @@ function bloqueIboView(r) {
   const ib = r.iboview;
   if (!ib) return r.aviso_iboview ? `<p class="nota">${esc(r.aviso_iboview)}</p>` : '';
   const nPuntos = ib.puntos_molden?.length || 0;
-  const cg = ib.puntos_tipo !== 'irc' && !!r.scan?.congelar; // coordenada congelada en varios valores
-  const delQue = ib.puntos_tipo === 'irc' ? 'del IRC' : cg ? 'de los valores congelados' : 'del scan';
+  const delQue = ib.puntos_tipo === 'irc' ? 'del IRC' : 'del scan';
   return `<h3 class="sub-iboview">Función de onda en formato Molden (IboView)</h3>
     <div class="grupo-btn">
       <button class="btn sec" type="button" data-guardar="molden">Descargar .molden</button>
       ${ib.naturales ? '<button class="btn sec" type="button" data-guardar="naturales">Orbitales naturales MP2 (.molden)</button>' : ''}
       ${nPuntos ? `<button class="btn" type="button" data-guardar="molden-puntos">Guardar los ${nPuntos} .molden ${delQue} numerados…</button>` : ''}
       ${ib.irc_zip ? `<button class="btn sec" type="button" data-guardar="ibo-irc">IRC para IboView (.zip, ${ib.irc_puntos} archivos .molden)</button>` : ''}
-      ${ib.scan_zip ? `<button class="btn sec" type="button" data-guardar="ibo-scan">${cg ? 'Valores congelados' : 'Scan'} para IboView (.zip, ${nPuntos} archivos .molden)</button>` : ''}
+      ${ib.scan_zip ? `<button class="btn sec" type="button" data-guardar="ibo-scan">Scan para IboView (.zip, ${nPuntos} archivos .molden)</button>` : ''}
     </div>
     <p class="nota">IboView lee la función de onda (base y orbitales) y construye él mismo los IBO a partir de los orbitales ocupados.
-    ${nPuntos ? `«Guardar … numerados» pide un nombre base y una carpeta y escribe base_001.molden … base_${String(nPuntos).padStart(3, '0')}.molden en el orden ${ib.puntos_tipo === 'irc' ? 'del camino (reactivo → TS → producto)' : cg ? 'creciente de los valores congelados' : 'del scan'}; ábralos todos a la vez en IboView para verlos como cuadros de una trayectoria.` : ''}
+    ${nPuntos ? `«Guardar … numerados» pide un nombre base y una carpeta y escribe base_001.molden … base_${String(nPuntos).padStart(3, '0')}.molden en el orden ${ib.puntos_tipo === 'irc' ? 'del camino (reactivo → TS → producto)' : 'del scan'}; ábralos todos a la vez en IboView para verlos como cuadros de una trayectoria.` : ''}
     ${ib.irc_zip ? 'Para el mecanismo: descomprima el .zip y abra en IboView <b>todos</b> los <code>irc_*.molden</code> a la vez; se cargan como cuadros de una trayectoria (reactivo → TS → producto) y los IBO se alinean entre cuadros, de modo que se ve el flujo de electrones. Las instrucciones están en <code>LEAME.txt</code>.' : ''}
     ${ib.naturales ? ' Los orbitales naturales MP2 vienen de la densidad MP2 relajada; sus ocupaciones (≈2, ≈0 y valores intermedios) indican la correlación electrónica.' : (r.metodo !== 'mp2' ? ' Con HF o DFT, los orbitales naturales coinciden con los canónicos (ocupaciones 2 y 0).' : '')}
     ${ib.aviso_naturales ? `<br>${esc(ib.aviso_naturales)}` : ''}</p>`;
@@ -2116,11 +2077,8 @@ function abrirDialogoMolden({ alTerminar = false } = {}) {
   const n = ib?.puntos_molden?.length || 0;
   if (!t || !n) return;
   const irc = ib.puntos_tipo === 'irc';
-  const cg = !irc && !!estado.resultado?.scan?.congelar; // coordenada congelada en varios valores
-  const calculo = irc ? 'el IRC' : cg ? 'el cálculo con la coordenada congelada' : 'el scan';
-  const orden = irc ? 'punto del IRC (reactivo → TS → producto)' : cg ? 'valor congelado, en orden creciente' : 'punto del scan, en su orden';
-  $('#dlgMoldenTexto').textContent = `${alTerminar ? `Terminó ${calculo} «${t.titulo}». ` : ''}Hay ${n} archivos .molden, uno por ${orden}. Escriba el nombre base y elija la carpeta donde guardarlos con numeración secuencial.`;
-  $('#dlgMoldenBase').value = `${nombreSeguro(t.titulo)}_${irc ? 'irc' : cg ? 'congelada' : 'scan'}`;
+  $('#dlgMoldenTexto').textContent = `${alTerminar ? `Terminó el ${irc ? 'IRC' : 'scan'} «${t.titulo}». ` : ''}Hay ${n} archivos .molden, uno por punto ${irc ? 'del IRC (reactivo → TS → producto)' : 'del scan, en su orden'}. Escriba el nombre base y elija la carpeta donde guardarlos con numeración secuencial.`;
+  $('#dlgMoldenBase').value = `${nombreSeguro(t.titulo)}_${irc ? 'irc' : 'scan'}`;
   const conCarpeta = typeof window.showDirectoryPicker === 'function';
   $('#dlgMoldenGuardar').textContent = conCarpeta ? 'Elegir carpeta y guardar' : `Descargar .zip numerado (${n} archivos)`;
   $('#dlgMoldenNota').hidden = conCarpeta;

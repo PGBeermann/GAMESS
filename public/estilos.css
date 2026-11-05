@@ -189,7 +189,6 @@ kbd { font-family: var(--mono); font-size: .8em; padding: 1px 5px; border: 1px s
 .scan-tipos { display: flex; flex-wrap: wrap; gap: 6px 18px; }
 .scan-campos { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; align-items: end; margin-top: 10px; }
 .scan-campos .btn { justify-self: start; }
-.scan-campos .valores-congelar { grid-column: span 2; }
 .scan-caja .nota { margin: 8px 0 0; }
 select:disabled { opacity: .55; }
 @media (max-width: 520px) { .form-calculo .largo { grid-column: 1 / -1; } }

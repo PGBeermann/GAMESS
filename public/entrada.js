@@ -405,19 +405,6 @@
       if (modo === 'fixed') avisos.push(`«fixed_${r[2]}» no existe en Psi4 1.11 (optking 0.5): el servidor coloca el valor y lo congela con «${c.frozen}».`);
       return { tipo, atomos, valores, congelar: true };
     }
-    // Bucle que vuelve a la geometría inicial en cada valor: optimizaciones independientes con la
-    // coordenada congelada (no un scan)
-    if (/\.set_geometry\s*\(\s*inicial\s*\)/.test(sinBloques)) {
-      valores = [...new Set(valores.map((v) => +Number(v).toFixed(4)))].sort((a, b) => a - b);
-      if (valores.length > 20) {
-        avisos.push(`Había ${valores.length} valores congelados: se usan los 20 primeros (máximo por cálculo).`);
-        valores = valores.slice(0, 20);
-      }
-      if (valores.some((v) => v < c.min || v > c.max)) throw new Error(`Los valores de ${c.nombre} congelados deben estar entre ${c.min} y ${c.max} ${c.unidad} (leídos: ${valores.join(', ')}).`);
-      avisos.push(`Optimizaciones con ${c.simbolo}(${etq}) congelada en ${valores.length} valor(es) (${valores.join(', ')} ${c.unidad}): cada una parte de la geometría inicial, coloca el valor, lo congela con «${c.frozen}» y optimiza el resto.`);
-      avisos.push('El bucle y el resto del código Python del archivo no se ejecutan tal cual: el servidor hace las optimizaciones equivalentes y escribe la tabla en el .out.');
-      return { tipo, atomos, valores, congelar: true };
-    }
     if (valores.length > 40) {
       avisos.push(`El scan tenía ${valores.length} puntos: se usan los 40 primeros.`);
       valores = valores.slice(0, 40);
@@ -454,11 +441,9 @@
     return { tipo, c, atomos, etq, valores: scan?.valores || [] };
   }
 
-  // Optimización con una coordenada congelada en un valor (sin scan); con varios valores, una
-  // optimización independiente por valor, cada una desde la geometría inicial
+  // Optimización con una coordenada congelada en un valor (sin scan)
   function lineasCongelar(nombre, metodo, xyz, scan) {
     const { tipo, c, atomos, etq, valores } = datosCoordenada(xyz, scan);
-    if (valores.length > 1) return lineasScan(nombre, metodo, xyz, scan, true);
     const v = Number(valores[0]);
     const formato = tipo === 'distancia' ? ':.4f} Å' : ':.2f}°';
     return [
@@ -474,32 +459,17 @@
     ];
   }
 
-  // congelar = true: varios valores congelados, cada optimización desde la geometría inicial
-  // (el lector de .in lo reconoce por «set_geometry(inicial)» dentro del bucle)
-  function lineasScan(nombre, metodo, xyz, scan, congelar = false) {
+  function lineasScan(nombre, metodo, xyz, scan) {
     const { tipo, c, atomos, etq, valores } = datosCoordenada(xyz, scan);
     const formato = tipo === 'distancia' ? '{v:6.3f} Å' : '{v:7.2f}°';
-    const cabecera = congelar
-      ? [
-        `# Optimizaciones con ${c.simbolo}(${etq}) congelada en ${valores.length} valores: para cada valor se coloca la coordenada`,
-        `# (el último átomo se mueve con todo lo que cuelga de él), se congela (${c.frozen}) y se optimiza el resto,`,
-        '# siempre desde la geometría inicial (optimizaciones independientes, no un scan).',
-        '# Cada valor deja su función de onda en scan_001.molden, scan_002.molden… (IboView).',
-      ]
-      : [
-        `# Scan relajado de ${c.nombre} ${c.simbolo}(${etq}): en cada punto se fija el valor (${c.frozen})`,
-        '# y se optimiza el resto, partiendo de la geometría del punto anterior.',
-        '# Cada punto deja su función de onda en scan_001.molden, scan_002.molden… (IboView).',
-      ];
-    const titulo = congelar ? `OPTIMIZACIONES CON ${c.simbolo}(${etq}) CONGELADA` : `SCAN RELAJADO ${c.simbolo}(${etq})`;
     return [
-      ...cabecera,
+      `# Scan relajado de ${c.nombre} ${c.simbolo}(${etq}): en cada punto se fija el valor (${c.frozen})`,
+      '# y se optimiza el resto, partiendo de la geometría del punto anterior.',
+      '# Cada punto deja su función de onda en scan_001.molden, scan_002.molden… (IboView).',
       ...lineasColocar(),
       `psi4.set_options({'${c.frozen}': '${atomos.join(' ')}'})`,
-      ...(congelar ? [`inicial = ${nombre}.geometry().clone()`] : []),
       'resultados, geometrias = [], []',
       `for n, v in enumerate([${valores.map((v) => v.toFixed(4)).join(', ')}], 1):`,
-      ...(congelar ? [`    ${nombre}.set_geometry(inicial)`, `    ${nombre}.update_geometry()`] : []),
       `    colocar(${nombre}, [${atomos.map((a) => a - 1).join(', ')}], v)`,
       `    e, wfn_v = optimize('${metodo}', return_wfn=True)`,
       "    molden(wfn_v, f'scan_{n:03d}.molden')",
@@ -507,12 +477,12 @@
       `    geometrias.append(${nombre}.geometry().clone())`,
       `psi4.set_options({'${c.frozen}': ''})`,
       '',
-      `psi4.core.print_out("\\n\\n===== ${titulo} =====\\n")`,
+      `psi4.core.print_out("\\n\\n===== SCAN RELAJADO ${c.simbolo}(${etq}) =====\\n")`,
       'e_ref = resultados[0][1]',
       'for v, e in resultados:',
       `    psi4.core.print_out(f"${c.simbolo}(${etq}) = ${formato}   E = {e:.10f} Eh   ΔE = {(e - e_ref) * psi4.constants.hartree2kcalmol:8.3f} kcal/mol\\n")`,
       '',
-      `# Función de onda en el ${congelar ? 'valor' : 'punto'} de menor energía`,
+      '# Función de onda en el punto de menor energía',
       'imin = min(range(len(resultados)), key=lambda k: resultados[k][1])',
       `${nombre}.set_geometry(geometrias[imin])`,
       `${nombre}.update_geometry()`,
