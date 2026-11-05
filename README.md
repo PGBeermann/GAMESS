@@ -17,14 +17,31 @@ el potencial electrostático y las vibraciones.
    **El código y la ejecución**: la ventana «Código de entrada (.in)» muestra siempre lo que se va
    a ejecutar. «Generar geometría 3D» crea el código con las opciones del formulario y, mientras no
    se edite a mano, se actualiza al cambiarlas. Hay **un solo botón «▶ Ejecutar cálculo»**, que
-   ejecuta ese código. Al lanzar o abrir un cálculo (incluidos «Calcular IRC desde este TS»,
-   «Calcular frecuencias» y «Mis cálculos»), la ventana muestra el `.in` de ese trabajo.
+   ejecuta ese código **sin modificarlo**: se envía el texto tal cual, el servidor lo guarda como
+   `entrada.in` y arma el cálculo leyendo ese mismo texto. Si el código trae opciones o líneas de
+   Python que el servidor no aplica, la página las lista y pregunta antes de ejecutar. El código
+   escrito a mano o abierto de un archivo ya no lo reescribe el formulario (sólo «Regenerar desde
+   el formulario», o una molécula nueva si se acepta la pregunta). Al lanzar o abrir un cálculo
+   (incluidos «Calcular IRC desde este TS», «Calcular frecuencias» y «Mis cálculos»), la ventana
+   muestra el `.in` de ese trabajo.
+   **Abrir un .in** pone el dibujo 2D (JSME), la molécula 3D, el código y el formulario según el
+   archivo. Si `molecule { … }` no tiene nombre, el título es el nombre del archivo; si no hay
+   ninguno, la página avisa que no se ha asignado un nombre y no ejecuta hasta que se escriba.
+   **Proyecto nuevo** (tarjeta 1) borra el dibujo, la molécula 3D, el código, las medidas y los
+   resultados en pantalla, y deja la ventana de código en blanco («Mis cálculos» no se toca).
+   **Corridas secuenciales** (optimización → TS → IRC): al terminar cada paso, su geometría final
+   queda en memoria y en el código de la ventana (sólo cambian las coordenadas del bloque
+   `molecule`), lista para el paso siguiente, y la salida se guarda automáticamente como
+   `nombre_OPT.out`, `nombre_TS.out`, `nombre_IRC.out` (también `_OPT_FREQ`, `_SP`, `_SCAN`,
+   `_CONG`). El botón «Salida de Psi4 (.out)» usa el mismo nombre.
 2. **Generar la geometría 3D**: RDKit añade los hidrógenos, genera coordenadas (ETKDG) y las
    preoptimiza con MMFF94. Sugiere la carga y la multiplicidad.
-   En el visor, **«📏 Medir»**: clic en 2 átomos → distancia, 3 → ángulo (vértice en el 2.º),
-   4 → diedro (signo IUPAC). La medida se recalcula al cambiar la geometría (optimización en
-   vivo, IRC, scan) y un 5.º clic empieza otra. Las etiquetas muestran el índice de cada átomo
-   (el mismo que usan el scan y las medidas), sin fondo.
+   En el visor, **«📏 Medir»**: se elige Distancia, Ángulo o Diedro y se hace clic en 2, 3 o 4
+   átomos (vértice del ángulo en el 2.º; diedro con signo IUPAC). Cada medida **queda marcada** en
+   la molécula con una línea punteada (y un arco en los ángulos) y su valor centrado, en letra
+   pequeña; se pueden hacer varias (hasta 20) y quitar una por una o todas. Se recalculan al
+   cambiar la geometría (optimización en vivo, IRC, scan). Las etiquetas muestran el índice de
+   cada átomo (el mismo que usan el scan y las medidas), sin fondo.
 3. **Configurar el cálculo**:
    - Métodos: HF, B3LYP, PBE0, ωB97X-D, M06-2X, MP2
    - Bases: STO-3G, 3-21G, 6-31G, 6-31G(d), 6-31G(d,p), 6-31+G(d), 6-311G(d,p), cc-pVDZ, aug-cc-pVDZ, def2-SVP, def2-TZVP
@@ -53,7 +70,7 @@ el potencial electrostático y las vibraciones.
      coordenada congelada se desvía, repite el punto con pasos aún más cortos. La salida de
      Psi4 (.out) termina con la tabla «SCAN RELAJADO» (valor, E, ΔE) escrita con
      `psi4.core.print_out`; la página muestra la curva, la tabla, la animación y descargas
-     CSV/XYZ. «Usar átomos de «Medir»» copia los átomos elegidos en el visor. Se lee de un .in
+     CSV/XYZ. «Usar átomos de «Medir»» copia los átomos de la última medida. Se lee de un .in
      con `fixed_/frozen_/ranged_distance|bend|dihedral` y un bucle `for` (lista, `np.arange`,
      `np.linspace`).
    - **Coordenadas congeladas (sin scan)**: en el mismo recuadro, «Congelar» fija una o varias
@@ -205,7 +222,7 @@ hacerlas en el servidor.
 | GET | `/salud` | Estado del servidor y versión de Psi4 |
 | GET | `/api/opciones` | Métodos, bases, tareas y límites |
 | POST | `/api/geometria` | `{molfile, smiles}` → geometría 3D (RDKit); `{xyz, carga, multiplicidad}` → enlaces y dibujo 2D conservando las coordenadas |
-| POST | `/api/calculos` | `{xyz, metodo, base, tarea, carga, multiplicidad, mep, titulo}` → crea un cálculo |
+| POST | `/api/calculos` | `{xyz, metodo, base, tarea, carga, multiplicidad, mep, titulo}` → crea un cálculo. Con `codigo` (texto del .in, máx. 300 000 caracteres) el servidor lo guarda tal cual como `entrada.in` y toma la molécula y las opciones de ese texto (no lo ejecuta como Python) |
 | GET | `/api/calculos/:id` | Estado, salida en vivo y resultado |
 | DELETE | `/api/calculos/:id` | Cancela un cálculo (sólo la misma IP) |
 | GET | `/api/calculos/:id/archivo/:nombre` | `salida.dat` (se guarda como .out), `entrada.in`, `geometria.xyz`, `homo.cube`, `lumo.cube`, `densidad.cube`, `mep.cube`, `orbitales.molden`, `naturales.molden`, `irc_###.molden` / `scan_###.molden` (uno por punto), `irc_iboview.zip`, `scan_iboview.zip` |

@@ -160,8 +160,19 @@ kbd { font-family: var(--mono); font-size: .8em; padding: 1px 5px; border: 1px s
 .barra-visor label { display: flex; align-items: center; gap: 6px; }
 .barra-visor .grupo-btn { margin-left: auto; }
 .btn[aria-pressed="true"] { background: var(--verde); color: #fff; border-color: var(--verde); }
-.medida-info { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 8px; padding: 8px 12px; border: 1px solid var(--borde); border-left: 4px solid #e07b00; border-radius: 8px; background: var(--codigo); font-size: .9rem; }
-.medida-info #medidaTexto { flex: 1; min-width: 0; }
+.medida-info { margin-top: 8px; padding: 8px 12px; border: 1px solid var(--borde); border-left: 4px solid #e07b00; border-radius: 8px; background: var(--codigo); font-size: .9rem; }
+.paso-siguiente { margin: 8px 0 0; padding: 6px 10px; border-left: 4px solid var(--verde); background: var(--verde-claro); border-radius: 6px; }
+.medida-cab { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
+.medida-info #medidaTexto { flex: 1; min-width: 12em; }
+.segmentado { display: inline-flex; border: 1px solid var(--verde); border-radius: 8px; overflow: hidden; }
+.segmentado button { font: inherit; font-size: .85rem; padding: 4px 10px; border: 0; background: transparent; color: var(--verde); cursor: pointer; }
+.segmentado button + button { border-left: 1px solid var(--verde); }
+.segmentado button[aria-pressed="true"] { background: var(--verde); color: #fff; }
+.segmentado button:focus-visible { outline: 2px solid var(--azul); outline-offset: -2px; }
+.medida-lista { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px 10px; }
+.medida-lista li { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 10px; border: 1px solid var(--borde); border-radius: 999px; background: var(--tarjeta); }
+.quitar-medida { font: inherit; line-height: 1; width: 22px; height: 22px; border: 0; border-radius: 50%; background: transparent; color: var(--gris); cursor: pointer; }
+.quitar-medida:hover { background: var(--verde-claro); color: var(--rojo); }
 .medida-info .valor { font-family: var(--mono); font-weight: 700; color: #b85f00; }
 :root[data-theme="dark"] .medida-info .valor { color: #ffae4d; }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .medida-info .valor { color: #ffae4d; } }

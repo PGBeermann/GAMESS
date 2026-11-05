@@ -35,9 +35,12 @@
     <section class="tarjeta" aria-labelledby="t1" id="tarjetaMolecula">
       <div class="tarjeta-cab">
         <h2 id="t1"><span class="paso">1</span> Dibuje la molécula</h2>
-        <select id="ejemplos" aria-label="Cargar un ejemplo">
-          <option value="">Cargar ejemplo…</option>
-        </select>
+        <div class="grupo-btn">
+          <button class="btn sec chico" id="proyectoNuevo" type="button" title="Borra el dibujo, la molécula 3D, el código, las medidas y los resultados en pantalla, y abre una ventana de código en blanco">🗋 Proyecto nuevo</button>
+          <select id="ejemplos" aria-label="Cargar un ejemplo">
+            <option value="">Cargar ejemplo…</option>
+          </select>
+        </div>
       </div>
       <div id="jsme" class="jsme-caja"><p class="cargando">Cargando editor JSME…</p></div>
       <div class="fila-smiles">
@@ -93,9 +96,17 @@
           <button class="btn sec chico" id="png" type="button" title="Descargar imagen PNG">PNG</button>
         </div>
       </div>
-      <div class="medida-info" id="medidaInfo" role="status" hidden>
-        <span id="medidaTexto"></span>
-        <button class="btn sec chico" id="medirLimpiar" type="button">Limpiar selección</button>
+      <div class="medida-info" id="medidaInfo" hidden>
+        <div class="medida-cab">
+          <div class="segmentado" id="medidaTipo" role="group" aria-label="Tipo de medida">
+            <button type="button" data-n="2" aria-pressed="true">Distancia</button>
+            <button type="button" data-n="3" aria-pressed="false">Ángulo</button>
+            <button type="button" data-n="4" aria-pressed="false">Diedro</button>
+          </div>
+          <span id="medidaTexto" role="status"></span>
+          <button class="btn sec chico" id="medirLimpiar" type="button" title="Quita todas las medidas marcadas en la molécula">Borrar medidas</button>
+        </div>
+        <ul class="medida-lista" id="medidaLista" hidden></ul>
       </div>
       <div class="barra-vib" id="barraVib" hidden>
         <div class="fila-vib">
@@ -206,6 +217,7 @@
         <textarea id="editorTexto" spellcheck="false" autocomplete="off" autocapitalize="off" wrap="off" aria-label="Código de la entrada de Psi4" aria-describedby="editorEstado" placeholder="Pulse «Generar geometría 3D» (o abra un archivo .in): el código se genera con las opciones del formulario y se actualiza al cambiarlas."></textarea>
       </div>
       <div class="editor-estado" id="editorEstado" role="status"></div>
+      <p class="nota paso-siguiente" id="estadoPaso" role="status" hidden></p>
       <div class="acciones">
         <span class="info" id="estimacion"></span>
         <span class="espaciador"></span>

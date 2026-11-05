@@ -146,7 +146,8 @@ const Z = Object.fromEntries(
   ('H He Li Be B C N O F Ne Na Mg Al Si P S Cl Ar K Ca Sc Ti V Cr Mn Fe Co Ni Cu Zn Ga Ge As Se Br Kr')
     .split(' ').map((s, i) => [s, i + 1]).concat([['I', 53]]),
 );
-const { generarEntradaPsi4 } = require('./public/entrada.js');
+const { generarEntradaPsi4, leerEntradaPsi4 } = require('./public/entrada.js');
+const MAX_CODIGO = 300000; // caracteres del .in enviado desde el editor
 const ARCHIVOS_PERMITIDOS = new Set(['salida.dat', 'entrada.in', 'geometria.xyz', 'homo.cube', 'lumo.cube', 'densidad.cube', 'mep.cube',
   'orbitales.molden', 'naturales.molden', 'irc_iboview.zip', 'scan_iboview.zip']); // los .molden y los .zip son para IboView
 // Un .molden por punto de un IRC o de un scan (carpeta molden/ del trabajo)
@@ -422,7 +423,23 @@ app.post('/api/geometria', async (req, res) => {
 
 app.post('/api/calculos', async (req, res) => {
   try {
-    const b = req.body || {};
+    let b = req.body || {};
+    // Código del editor: se guarda tal cual como entrada.in y el cálculo se arma leyendo ese mismo
+    // texto (con el lector de la página), así lo que corre es lo que dice el código. Por seguridad
+    // el texto no se ejecuta como Python.
+    let codigo = null;
+    if (b.codigo != null) {
+      if (typeof b.codigo !== 'string' || !b.codigo.trim()) return res.status(400).json({ error: 'El código de entrada está vacío.' });
+      if (b.codigo.length > MAX_CODIGO) return res.status(400).json({ error: 'El código de entrada es demasiado largo (máx. 300 000 caracteres).' });
+      codigo = b.codigo.replace(/\r\n/g, '\n');
+      let d;
+      try { d = leerEntradaPsi4(codigo); } catch (e) { return res.status(400).json({ error: `El código no se puede usar: ${e.message}` }); }
+      b = {
+        ...b, xyz: d.xyz, carga: d.carga, multiplicidad: d.multiplicidad, metodo: d.metodo, base: d.base, tarea: d.tarea,
+        irc: d.irc || undefined, scan: d.scan || undefined, solvente: d.pcm?.solvente || 'ninguno', modelo_pcm: d.pcm?.modelo,
+        titulo: b.titulo || d.titulo,
+      };
+    }
     const metodo = METODOS.find((m) => m.id === b.metodo);
     const base = BASES.find((m) => m.id === b.base);
     const tarea = TAREAS.find((m) => m.id === b.tarea);
@@ -459,8 +476,9 @@ app.post('/api/calculos', async (req, res) => {
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
       mep: b.mep !== false, molden: true, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan, pcm,
     }));
-    // Entrada .in equivalente, para descargarla y ejecutarla con Psi4 fuera del servidor
-    await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), generarEntradaPsi4({
+    // Entrada .in: el código del editor tal cual o, si no hubo código, la equivalente generada
+    // (para descargarla y ejecutarla con Psi4 fuera del servidor)
+    await fsp.writeFile(path.join(carpetaDe(id), 'entrada.in'), codigo ?? generarEntradaPsi4({
       titulo, xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
       memoria: CONFIG.memoria, mep: b.mep !== false, molden: true, irc, scan, pcm,
     }));

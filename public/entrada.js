@@ -301,15 +301,18 @@
     if (!base) { base = '6-31g*'; avisos.push('El archivo no indicaba la base: se usa 6-31G(d).'); }
     const baseId = normalizarBase(base);
     if (ignoradas.length) avisos.push(`Opciones ignoradas: ${ignoradas.slice(0, 6).join('; ')}${ignoradas.length > 6 ? '…' : ''}`);
+    // Lo que el servidor no aplicará (la página lo avisa antes de ejecutar)
+    const noAplicado = ignoradas.map((x) => `set ${x}`);
     // Código Python que el servidor no ejecuta (bucles, print_out, variables…): se avisa
     if (tarea !== 'scan' && tarea !== 'congelar') {
       const codigo = sinBloques.split('\n').map((l) => l.trim()).filter((l) => l && !LINEA_CONOCIDA.test(l));
+      noAplicado.push(...codigo);
       if (codigo.length) {
         avisos.push(`El archivo contiene código Python que el servidor no ejecuta (p. ej. «${codigo[0].slice(0, 70)}»${codigo.length > 1 ? ` y ${codigo.length - 1} línea(s) más` : ''}): sólo se interpretan la molécula, el método, la base y el tipo de cálculo. Para un scan relajado use «frozen_distance» (o «fixed_distance») con un bucle for.`);
       }
     }
     return {
-      titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos,
+      titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos, noAplicado,
       mep: /\bcubeprop\s*\(/i.test(sinBloques), molden: /\bmolden\s*\(/i.test(sinBloques), irc: opcionesIrc, scan: opcionesScan, pcm,
     };
   }

@@ -22,7 +22,7 @@ const estado = {
   opciones: null, geom: null, modificada: true, jsme: null, visor: null,
   trabajo: null, resultado: null, token: 0, reloj: null, inicio: null,
   modelo: null, cubos: new Map(), reproductor: null, girando: false, modoActivo: null, flechas: [],
-  medir: false, seleccion: [], medidaFormas: [], // medidas en el visor 3D
+  medir: false, tipoMedida: 2, seleccion: [], medidas: [], medidaFormas: [], // medidas en el visor 3D
   vivo: null, vivoAnim: 0, molblocks: new Map(), // geometría en vivo durante la optimización
 };
 
@@ -227,13 +227,19 @@ function aplicarEstilo() {
 }
 
 // ---------- Medir distancias, ángulos y diedros ----------
-// Con «Medir» activo, cada clic en un átomo lo selecciona (máx. 4). 2 átomos → distancia,
-// 3 → ángulo (vértice en el 2.º), 4 → diedro. Se recalcula al cambiar la geometría.
+// Con «Medir» activo se elige el tipo (distancia, ángulo o diedro) y se hace clic en los átomos.
+// Al completar 2, 3 o 4 átomos la medida queda marcada en la molécula y se puede seguir midiendo.
+// Las medidas se recalculan cuando cambia la geometría (optimización en vivo, resultados…).
 const COLOR_MEDIDA = '#d06400';
+const MAX_MEDIDAS = 20;
+const NOMBRE_MEDIDA = { 2: 'distancia', 3: 'ángulo', 4: 'diedro' };
 const vec = (p, q) => [q.x - p.x, q.y - p.y, q.z - p.z];
 const punto = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const cruz3 = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
 const norma = (a) => Math.hypot(...a);
+const nombreAtomo = (atomos, i) => `${atomos[i]?.elem || ''}${i + 1}`;
+// 1–2 y 2–1 son la misma medida
+const claveMedida = (m) => { const a = m.join('-'); const b = [...m].reverse().join('-'); return a < b ? a : b; };
 
 function calcularMedida(P) {
   if (P.length === 2) return norma(vec(P[0], P[1]));
@@ -253,31 +259,45 @@ function calcularMedida(P) {
 }
 
 function textoMedida(atomos, sel) {
-  const nombre = (i) => `${atomos[i]?.elem || ''}${i + 1}`;
+  const nombre = (i) => nombreAtomo(atomos, i);
   const cadena = sel.map(nombre).join('–');
   const P = sel.map((i) => atomos[i]);
+  if (P.some((a) => !a)) return null;
   const val = calcularMedida(P);
   if (sel.length === 2) return { corto: `${val.toFixed(3)} Å`, largo: `Distancia ${cadena} = <span class="valor">${val.toFixed(4)} Å</span>` };
-  if (sel.length === 3) {
-    const d1 = norma(vec(P[1], P[0])); const d2 = norma(vec(P[1], P[2]));
-    return { corto: `${val.toFixed(1)}°`, largo: `Ángulo ${cadena} = <span class="valor">${val.toFixed(2)}°</span> <span class="info">(vértice ${nombre(sel[1])}; ${nombre(sel[0])}–${nombre(sel[1])} ${d1.toFixed(3)} Å, ${nombre(sel[1])}–${nombre(sel[2])} ${d2.toFixed(3)} Å)</span>` };
-  }
-  if (sel.length === 4) return { corto: `${val.toFixed(1)}°`, largo: `Diedro ${cadena} = <span class="valor">${val >= 0 ? '+' : '−'}${Math.abs(val).toFixed(2)}°</span>` };
+  if (sel.length === 3) return { corto: `${val.toFixed(1)}°`, largo: `Ángulo ${cadena} = <span class="valor">${val.toFixed(2)}°</span> <span class="info">(vértice ${nombre(sel[1])})</span>` };
+  if (sel.length === 4) return { corto: `${val >= 0 ? '' : '−'}${Math.abs(val).toFixed(1)}°`, largo: `Diedro ${cadena} = <span class="valor">${val >= 0 ? '+' : '−'}${Math.abs(val).toFixed(2)}°</span>` };
   return null;
 }
 
 function actualizarTextoMedida(atomos) {
   const caja = $('#medidaInfo');
-  caja.hidden = !estado.medir;
-  if (!estado.medir) return;
+  const medidas = estado.medidas;
+  caja.hidden = !estado.medir && !medidas.length;
+  if (caja.hidden) return;
+  const n = estado.tipoMedida;
+  $('#medidaTipo').hidden = !estado.medir;
+  $$('#medidaTipo button').forEach((b) => b.setAttribute('aria-pressed', String(Number(b.dataset.n) === n)));
   const sel = estado.seleccion;
   let html;
   if (estado.modoActivo) html = 'Detenga la animación de la vibración para medir.';
   else if (!atomos.length) html = 'Cargue una molécula para medir.';
-  else if (!sel.length) html = 'Haga clic en 2 átomos (distancia), 3 (ángulo) o 4 (diedro). Otro clic en un átomo seleccionado lo quita.';
-  else if (sel.length === 1) html = `Átomo ${atomos[sel[0]]?.elem || ''}${sel[0] + 1} seleccionado: elija otro (2 = distancia, 3 = ángulo, 4 = diedro).`;
-  else html = textoMedida(atomos, sel).largo + (sel.length < 4 ? ' <span class="info">· siga eligiendo para un ' + (sel.length === 2 ? 'ángulo' : 'diedro') + '</span>' : '');
+  else if (!estado.medir) html = 'Active «📏 Medir» para agregar otra medida.';
+  else if (sel.length) {
+    const falta = n - sel.length;
+    html = `Midiendo ${NOMBRE_MEDIDA[n]}: ${sel.map((i) => nombreAtomo(atomos, i)).join('–')} · elija ${falta} átomo${falta > 1 ? 's' : ''} más (otro clic en un átomo elegido lo quita).`;
+  } else {
+    html = { 2: 'Haga clic en 2 átomos para medir una distancia.', 3: 'Haga clic en 3 átomos para medir un ángulo (el 2.º es el vértice).', 4: 'Haga clic en 4 átomos para medir un diedro.' }[n]
+      + ' Cada medida queda marcada y puede seguir midiendo.';
+  }
   $('#medidaTexto').innerHTML = html;
+  const lista = $('#medidaLista');
+  lista.innerHTML = atomos.length ? medidas.map((m, k) => {
+    const t = textoMedida(atomos, m);
+    return t ? `<li>${t.largo}<button type="button" class="quitar-medida" data-quitar-medida="${k}" title="Quitar esta medida" aria-label="Quitar esta medida">×</button></li>` : '';
+  }).join('') : '';
+  lista.hidden = !lista.innerHTML;
+  $('#medirLimpiar').hidden = !medidas.length && !sel.length;
 }
 
 function borrarFormasMedida() {
@@ -288,37 +308,95 @@ function borrarFormasMedida() {
   estado.medidaFormas = [];
 }
 
+// Línea punteada (puntos pequeños) entre dos átomos
+function lineaPunteada(p, q) {
+  const forma = estado.visor.addShape({ color: COLOR_MEDIDA });
+  const d = norma(vec(p, q));
+  const n = Math.max(2, Math.round(d / 0.17));
+  for (let k = 0; k <= n; k++) {
+    const f = k / n;
+    forma.addSphere({ center: { x: p.x + (q.x - p.x) * f, y: p.y + (q.y - p.y) * f, z: p.z + (q.z - p.z) * f }, radius: 0.038, color: COLOR_MEDIDA });
+  }
+  return forma;
+}
+
+// Unitarios desde el vértice de un ángulo hacia los otros dos átomos
+function bracitos(P) {
+  const u = vec(P[1], P[0]); const w = vec(P[1], P[2]);
+  const nu = norma(u); const nw = norma(w);
+  return [u.map((x) => x / nu), w.map((x) => x / nw)];
+}
+
+// Arco punteado del ángulo, cerca del vértice
+function arcoPunteado(P, radio = 0.42) {
+  const [u, w] = bracitos(P);
+  const forma = estado.visor.addShape({ color: COLOR_MEDIDA });
+  const n = 9;
+  for (let k = 0; k <= n; k++) {
+    const f = k / n;
+    const d = u.map((x, j) => x * (1 - f) + w[j] * f);
+    const nd = norma(d) || 1;
+    forma.addSphere({ center: { x: P[1].x + (d[0] / nd) * radio, y: P[1].y + (d[1] / nd) * radio, z: P[1].z + (d[2] / nd) * radio }, radius: 0.03, color: COLOR_MEDIDA });
+  }
+  return forma;
+}
+
+// Dónde va el valor: en el punto medio de la distancia, dentro del ángulo (sobre la bisectriz,
+// junto al arco) y en el centro del enlace central del diedro
+function posicionEtiqueta(P) {
+  const medio = (a, b) => ({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, z: (a.z + b.z) / 2 });
+  if (P.length === 2) return medio(P[0], P[1]);
+  if (P.length === 3) {
+    const [u, w] = bracitos(P);
+    const b = u.map((x, j) => x + w[j]);
+    const nb = norma(b) || 1;
+    return { x: P[1].x + (b[0] / nb) * 0.75, y: P[1].y + (b[1] / nb) * 0.75, z: P[1].z + (b[2] / nb) * 0.75 };
+  }
+  return medio(P[1], P[2]);
+}
+
 function dibujarMedida(render = true) {
   const v = estado.visor;
   borrarFormasMedida();
   const atomos = estado.modoActivo ? [] : (v.getModel()?.selectedAtoms({}) || []);
-  if (estado.seleccion.some((i) => i >= atomos.length) && !estado.modoActivo) estado.seleccion = [];
+  if (atomos.length) { // otra molécula con menos átomos: se quitan las medidas que ya no existen
+    if (estado.seleccion.some((i) => i >= atomos.length)) estado.seleccion = [];
+    estado.medidas = estado.medidas.filter((m) => m.every((i) => i < atomos.length));
+  }
   actualizarTextoMedida(atomos);
-  const sel = estado.seleccion;
-  if (!estado.medir || !sel.length || !atomos.length) { if (render) v.render(); return; }
-  const P = sel.map((i) => atomos[i]);
+  if (!atomos.length) { if (render) v.render(); return; }
   const forma = (obj) => estado.medidaFormas.push({ tipo: 'forma', obj });
   const etiqueta = (obj) => estado.medidaFormas.push({ tipo: 'etiqueta', obj });
-  // Halo un poco mayor que la esfera del átomo en el estilo actual, para que se vea
+  const fondo = varCSS('--visor') || '#ffffff';
+  for (const m of estado.medidas) {
+    const P = m.map((i) => atomos[i]);
+    for (let k = 0; k < P.length - 1; k++) forma(lineaPunteada(P[k], P[k + 1]));
+    if (P.length === 3) forma(arcoPunteado(P));
+    // Valor centrado, pequeño y con un fondo del color del visor que corta la línea punteada
+    etiqueta(etiquetaSinFondo(textoMedida(atomos, m).corto, posicionEtiqueta(P), {
+      fontColor: COLOR_MEDIDA, fontSize: 11, showBackground: true, backgroundColor: fondo, backgroundOpacity: 0.85, borderThickness: 0,
+    }));
+  }
+  // Medida en curso: halo en los átomos elegidos y la línea punteada entre ellos
+  const sel = estado.medir ? estado.seleccion : [];
+  const P = sel.map((i) => atomos[i]);
   const vdw = { H: 1.2, C: 1.7, N: 1.55, O: 1.52, F: 1.47, P: 1.8, S: 1.8, Cl: 1.75, Br: 1.85, I: 1.98 };
   const escala = { bolas: 0.27, esferas: 1.0 }[$('#estilo').value] || 0;
   P.forEach((a, k) => {
     const radio = Math.max(0.42, escala * (vdw[a.elem] || 1.7) + 0.18);
     forma(v.addSphere({ center: { x: a.x, y: a.y, z: a.z }, radius: radio, color: COLOR_MEDIDA, opacity: 0.4 }));
-    // Índice del átomo seleccionado (si las etiquetas generales no lo muestran ya)
-    if (!$('#etiquetas').checked) etiqueta(etiquetaSinFondo(String(sel[k] + 1), a, { fontColor: COLOR_MEDIDA, fontSize: 14, screenOffset: { x: 15, y: 15 } }));
+    // Índice del átomo elegido (si las etiquetas generales no lo muestran ya)
+    if (!$('#etiquetas').checked) etiqueta(etiquetaSinFondo(String(sel[k] + 1), a, { fontColor: COLOR_MEDIDA, fontSize: 12, screenOffset: { x: 15, y: 15 } }));
   });
-  for (let k = 0; k < P.length - 1; k++) {
-    forma(v.addCylinder({ start: { x: P[k].x, y: P[k].y, z: P[k].z }, end: { x: P[k + 1].x, y: P[k + 1].y, z: P[k + 1].z }, radius: 0.03, color: COLOR_MEDIDA, dashed: true, fromCap: 1, toCap: 1 }));
-  }
-  if (P.length >= 2) {
-    // Valor junto al centro de los átomos elegidos (en el diedro, sobre el enlace central)
-    const base = P.length === 4 ? [P[1], P[2]] : P;
-    const c = { x: 0, y: 0, z: 0 };
-    base.forEach((a) => { c.x += a.x / base.length; c.y += a.y / base.length; c.z += a.z / base.length; });
-    etiqueta(etiquetaSinFondo(textoMedida(atomos, sel).corto, c, { fontColor: COLOR_MEDIDA, fontSize: 15, screenOffset: { x: 0, y: -30 } }));
-  }
+  for (let k = 0; k < P.length - 1; k++) forma(lineaPunteada(P[k], P[k + 1]));
   if (render) v.render();
+}
+
+function agregarMedida(m) {
+  const clave = claveMedida(m);
+  if (estado.medidas.some((x) => claveMedida(x) === clave)) return; // ya estaba marcada
+  estado.medidas.push(m);
+  if (estado.medidas.length > MAX_MEDIDAS) estado.medidas.shift();
 }
 
 function alClicAtomo(atomo) {
@@ -329,8 +407,8 @@ function alClicAtomo(atomo) {
   const pos = s.indexOf(i);
   if (pos >= 0) s.splice(pos, 1);
   else {
-    if (s.length >= 4) s.length = 0; // un 5.º clic empieza una medida nueva
     s.push(i);
+    if (s.length >= estado.tipoMedida) { agregarMedida(s.slice(0, estado.tipoMedida)); s.length = 0; }
   }
   dibujarMedida();
 }
@@ -338,16 +416,42 @@ function alClicAtomo(atomo) {
 function alternarMedir() {
   estado.medir = !estado.medir;
   $('#medir').setAttribute('aria-pressed', String(estado.medir));
-  if (!estado.medir) estado.seleccion = [];
+  estado.seleccion = [];
   const v = estado.visor;
   if (v.getModel()) v.setClickable({}, estado.medir, estado.medir ? alClicAtomo : null);
   dibujarMedida();
 }
 
-// Molécula distinta: se descarta la selección
-function reiniciarMedida() {
+function elegirTipoMedida(n) {
+  estado.tipoMedida = n;
   estado.seleccion = [];
   dibujarMedida();
+}
+
+function quitarMedida(k) {
+  estado.medidas.splice(k, 1);
+  dibujarMedida();
+}
+
+// Botón «Borrar medidas»
+function reiniciarMedida() {
+  estado.seleccion = [];
+  estado.medidas = [];
+  dibujarMedida();
+}
+
+// Molécula distinta: la numeración de los átomos cambia y las medidas ya no sirven
+function olvidarMedidas() {
+  estado.seleccion = [];
+  estado.medidas = [];
+}
+
+// Átomos de la medida en curso o, si no hay, de la última medida marcada
+function atomosDeMedida(natom = null) {
+  const sel = estado.seleccion || [];
+  if (sel.length >= 2 && (!natom || sel.length === natom)) return sel;
+  const lista = (estado.medidas || []).filter((m) => !natom || m.length === natom);
+  return lista.length ? lista[lista.length - 1] : [];
 }
 
 function quitarFlechas() {
@@ -474,7 +578,7 @@ async function generar3D({ explicito = false } = {}) {
   $('#infoMolecula').textContent = 'Generando geometría 3D…';
   try {
     const g = await api('/api/geometria', { method: 'POST', body: JSON.stringify({ molfile, smiles }) });
-    estado.seleccion = []; // molécula nueva: la numeración de los átomos cambia
+    olvidarMedidas(); // molécula nueva: la numeración de los átomos cambia
     estado.geom = g;
     estado.modificada = false;
     estado.resultado = null;
@@ -491,7 +595,8 @@ async function generar3D({ explicito = false } = {}) {
     $('#etiquetaModelo').textContent = `${g.formula} · geometría inicial (${g.campo_fuerza})`;
     actualizarEstimacion();
     // El código .in se genera con la geometría nueva y las opciones del formulario
-    const forzar = explicito && editadoAMano() && confirm('El código fue editado a mano. ¿Reemplazarlo con la geometría nueva y las opciones del formulario?');
+    // El código escrito a mano o abierto de un archivo sólo se reemplaza con permiso
+    const forzar = editadoAMano() && confirm('Hay una molécula nueva, pero el código de la ventana fue escrito a mano o abierto de un archivo.\n\nAceptar: reemplazar el código con la molécula nueva y las opciones del formulario.\nCancelar: conservar el código (al ejecutar se usará ese código).');
     sincronizarCodigo({ forzar: forzar || !editadoAMano(), desplazar: explicito });
     return g;
   } finally {
@@ -554,8 +659,9 @@ function validarEditor() {
     pintarLineas();
     const natomos = d.xyz.trim().split('\n').length;
     let pendiente = '';
-    if (textoEditor() !== editor.aplicado) pendiente = ' · <span class="pend">editado a mano: ya no se actualiza con el formulario («Regenerar desde el formulario» lo vuelve a sincronizar); se ejecuta tal cual</span>';
+    if (editadoAMano()) pendiente = ` · <span class="pend">${editor.archivo && textoEditor() === editor.aplicado ? `código de ${esc(editor.archivo)}` : 'editado a mano'}: se ejecuta tal cual, sin cambios; el formulario ya no lo reescribe («Regenerar desde el formulario» lo vuelve a sincronizar)</span>`;
     else if (formularioDistinto(d)) pendiente = ' · <span class="pend">el formulario o el dibujo cambiaron; al ejecutar se usará este código</span>';
+    if (d.noAplicado?.length) pendiente += ` · <span class="pend">${d.noAplicado.length} línea(s) que el servidor no aplica (se avisará al ejecutar)</span>`;
     if (estado.errorFormulario && textoEditor() === editor.aplicado) pendiente += ` · <span class="pend">formulario incompleto: ${esc(estado.errorFormulario)}</span>`;
     const origen = editor.trabajo ? `<span class="pend">Código del cálculo «${esc(editor.trabajo.titulo || '')}»</span> · ` : '';
     caja.innerHTML = `${origen}<span class="ok">✓ Código válido</span> · ${natomos} átomos · carga ${d.carga} · multiplicidad ${d.multiplicidad} · ${esc(nombreDe('metodos', d.metodo))}/${esc(nombreDe('bases', d.base))} · ${esc(nombreDe('tareas', d.tarea))} · ${d.pcm ? `en ${esc(buscarSolvente(d.pcm.solvente)?.nombre || d.pcm.solvente)} (${esc(d.pcm.modelo)})` : 'fase gaseosa'}${pendiente}`;
@@ -568,8 +674,9 @@ function validarEditor() {
   }
 }
 
-function abrirEditor(texto, nombre, { desplazar = true, trabajo = null } = {}) {
+function abrirEditor(texto, nombre, { desplazar = true, trabajo = null, archivo = null } = {}) {
   editor.nombre = nombre;
+  editor.archivo = archivo; // nombre del archivo abierto (para el título si el código no lo trae)
   editor.aplicado = null;
   editor.clave = null;
   editor.trabajo = trabajo;
@@ -589,21 +696,22 @@ function marcarAplicado(texto, datos) {
   validarEditor();
 }
 
-// Lleva el código del editor a la molécula 3D, al dibujo y al formulario
-async function aplicarEditor(avisosExtra = []) {
+// Lleva el código del editor a la molécula 3D, al dibujo y al formulario (el texto no cambia).
+// Con «forzar» (al abrir un archivo) se vuelven a poner el dibujo y la molécula 3D aunque coincidan.
+async function aplicarEditor(avisosExtra = [], { forzar = false } = {}) {
   const texto = textoEditor();
   const datos = leerEntradaPsi4(texto);
   const nombre = editor.nombre || 'entrada.in';
   const clave = claveEntrada(datos);
   let g = estado.geom;
   const avisos = [...(datos.avisos || []), ...avisosExtra];
-  if (!g || estado.modificada || g.claveEntrada !== clave) {
+  if (forzar || !g || estado.modificada || g.claveEntrada !== clave) {
     $('#infoMolecula').textContent = `Leyendo ${nombre}…`;
     g = await api('/api/geometria', {
       method: 'POST', body: JSON.stringify({ xyz: datos.xyz, carga: datos.carga, multiplicidad: datos.multiplicidad }),
     });
     estado.geom = { ...g, archivo: nombre, claveEntrada: clave };
-    estado.seleccion = [];
+    olvidarMedidas();
     estado.modificada = false;
     estado.resultado = null;
     detenerVibracion();
@@ -611,17 +719,24 @@ async function aplicarEditor(avisosExtra = []) {
     $('#ctrlCargas').hidden = true;
     $('#colorCargas').checked = false;
     $('#smiles').value = g.smiles || '';
-    // Dibujo 2D en JSME (sin marcar la estructura como modificada)
-    if (g.mol2d && estado.jsme) {
+    // Dibujo 2D en JSME (sin marcar la estructura como modificada). Si no se puede dibujar, se
+    // borra el dibujo anterior para que no muestre otra molécula.
+    if (estado.jsme) {
       estado.cargaArchivo = Date.now();
-      try { estado.jsme.readMolFile(g.mol2d); } catch { /* el dibujo es opcional */ }
+      try { if (g.mol2d) estado.jsme.readMolFile(g.mol2d); else estado.jsme.reset(); } catch { /* el dibujo es opcional */ }
     }
     prepararSuperficies([]);
     cargarModelo(g.molblock || datos.xyz, g.molblock ? 'sdf' : 'xyz');
     $('#etiquetaModelo').textContent = `${g.formula} · geometría de ${nombre}`;
     if (g.aviso) avisos.push(g.aviso);
   }
-  ponerFormulario(datos, nombre.replace(/\.[^.]+$/, ''));
+  // Sin nombre en «molecule { … }»: se usa el nombre del archivo, si lo hay
+  const base = editor.archivo ? editor.archivo.replace(/\.[^.]+$/, '') : '';
+  if (!datos.titulo) {
+    avisos.push(base ? `El código no indica el nombre de la molécula (molecule nombre { … }): se usa el nombre del archivo, «${base}».`
+      : 'No se ha asignado un nombre a la molécula: escríbalo en «Título» o en el código (molecule nombre { … }).');
+  }
+  ponerFormulario(datos, base);
   $('#infoMolecula').innerHTML = `<strong>${esc(nombre)}</strong>: ${esc(g.formula)} · ${g.natomos} átomos · ${g.electrones} electrones · carga ${datos.carga} · multiplicidad ${datos.multiplicidad} · ${esc(nombreDe('metodos', datos.metodo))}/${esc(nombreDe('bases', datos.base))} · ${esc(nombreDe('tareas', datos.tarea))}`;
   avisos.push('Se usan las coordenadas del código tal cual. Si edita el dibujo, se generará una geometría nueva.');
   mostrarAvisos(avisos);
@@ -633,7 +748,7 @@ async function aplicarEditor(avisosExtra = []) {
 // Formulario con lo que dice el código (el título se conserva si corresponde a la misma molécula)
 function ponerFormulario(datos, tituloPorDefecto = '') {
   const tituloActual = $('#titulo').value.trim();
-  if (!tituloActual || nombreMolecula(tituloActual) !== datos.titulo) $('#titulo').value = datos.titulo || tituloPorDefecto;
+  if (datos.titulo ? nombreMolecula(tituloActual) !== datos.titulo : !tituloActual || tituloPorDefecto) $('#titulo').value = datos.titulo || tituloPorDefecto;
   $('#carga').value = datos.carga;
   $('#multiplicidad').value = datos.multiplicidad;
   $('#metodo').value = datos.metodo;
@@ -674,8 +789,11 @@ async function abrirArchivo(archivo) {
       });
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
     }
-    abrirEditor(texto, nombre);
-    await aplicarEditor(extra);
+    // El código del archivo se usa tal cual: el formulario ya no lo reescribe
+    abrirEditor(texto, nombre, { archivo: archivo.name });
+    editor.propio = !/\.xyz$/i.test(archivo.name);
+    $('#titulo').value = '';
+    await aplicarEditor(extra, { forzar: true });
   } catch (e) {
     // El consejo de corregir el código sólo aplica si el error está en el código (no, p. ej., en la clave)
     const errorDelCodigo = editorAbierto() && !validarEditor();
@@ -846,18 +964,18 @@ function elegirTipoScan(casilla) {
   if (tipo) {
     $('#scanDesde').value = ''; $('#scanHasta').value = ''; $('#scanValor').value = '';
     $('#scanPaso').value = SCAN_UI[tipo].paso;
-    const sel = estado.seleccion || [];
-    if (sel.length === SCAN_UI[tipo].natom) sel.forEach((i, k) => { $(CAMPOS_ATOMOS[k]).value = i + 1; });
+    atomosDeMedida(SCAN_UI[tipo].natom).forEach((i, k) => { $(CAMPOS_ATOMOS[k]).value = i + 1; });
   }
   actualizarScanUI();
 }
 
-// Copia los átomos elegidos con «📏 Medir»
+// Copia los átomos de la última medida hecha con «📏 Medir» (o de la que se está eligiendo)
 function scanDesdeMedida() {
-  const sel = estado.seleccion || [];
+  const sel = atomosDeMedida();
   const tipo = { 2: 'distancia', 3: 'angulo', 4: 'diedro' }[sel.length];
   if (!tipo) {
-    $('#scanInfo').textContent = 'Seleccione 2, 3 o 4 átomos con «📏 Medir» en el visor 3D y vuelva a pulsar el botón.';
+    $('#scanInfo').textContent = 'Mida una distancia, un ángulo o un diedro con «📏 Medir» en el visor 3D y vuelva a pulsar el botón.';
+    $('#scanInfo').hidden = false;
     return;
   }
   $$('.scan-tipo').forEach((c) => { c.checked = c.value === tipo; });
@@ -974,7 +1092,9 @@ function mostrarOpcionesIRC() {
 // Lo que se ejecuta es el código de la ventana «Código de entrada». Mientras no se edite a mano,
 // se regenera al generar la geometría 3D y al cambiar el formulario. Al lanzar (o abrir) un
 // cálculo, la ventana muestra el código de ese trabajo, tal como lo recibió el servidor.
-const editadoAMano = () => !!textoEditor() && editor.aplicado !== null && textoEditor() !== editor.aplicado;
+// El código es «propio» si se escribió en la ventana o vino de un archivo: entonces el formulario
+// ya no lo reescribe (sólo «Regenerar desde el formulario», a pedido)
+const editadoAMano = () => !!textoEditor() && (editor.propio || (editor.aplicado !== null && textoEditor() !== editor.aplicado));
 
 // Código .in con la geometría actual y las opciones del formulario (sin pedir nada al servidor)
 function codigoDesdeFormulario() {
@@ -1005,6 +1125,7 @@ function sincronizarCodigo({ forzar = false, desplazar = false } = {}) {
     return false;
   }
   if (textoEditor() !== r.texto || editor.trabajo) abrirEditor(r.texto, r.nombre, { desplazar });
+  editor.propio = false;
   marcarAplicado(r.texto, datos);
   return true;
 }
@@ -1038,26 +1159,93 @@ async function aplicarDesdeEditor(boton) {
   }
 }
 
-// El único botón para calcular: ejecuta el código de la ventana
+// ---------- Proyecto nuevo ----------
+// Deja la página como recién abierta, pero vacía: sin dibujo, sin molécula 3D, sin resultados en
+// pantalla y con la ventana de código en blanco. «Mis cálculos» no se toca.
+function nuevoProyecto() {
+  if (!confirm('¿Empezar un proyecto nuevo?\n\nSe borran el dibujo, la molécula 3D, el código, las medidas y los resultados en pantalla. Los cálculos siguen en «Mis cálculos».')) return;
+  estado.token++; // deja de seguir el cálculo en pantalla (sigue en el servidor)
+  finSeguimiento();
+  detenerAnimacion();
+  const v = estado.visor;
+  v.removeAllModels(); v.removeAllShapes(); v.removeAllLabels(); v.render();
+  Object.assign(estado, { geom: null, modificada: false, resultado: null, infoTrabajo: null, trabajo: null, vivo: null, asignaciones: new Map() });
+  olvidarMedidas();
+  borrarFormasMedida();
+  if (estado.jsme) { estado.cargaArchivo = Date.now(); try { estado.jsme.reset(); } catch { /* sin dibujo */ } }
+  // Formulario con los valores iniciales
+  $('#titulo').value = ''; $('#smiles').value = '';
+  $('#carga').value = 0; $('#multiplicidad').value = 1;
+  $('#metodo').value = 'b3lyp'; $('#base').value = '6-31g*'; $('#tarea').value = 'optimizacion';
+  $$('.scan-tipo').forEach((c) => { c.checked = false; });
+  $('#congelarLista').value = ''; $('#congelarFrec').checked = false;
+  estado.scanEditor = null;
+  $('#ircDireccion').value = 'ambas'; $('#ircPuntos').value = 20; $('#ircPaso').value = 0.2;
+  $('#solvente').value = 'ninguno';
+  $('#mep').checked = true;
+  mostrarOpcionesIRC();
+  actualizarSolventeUI();
+  // Pantalla limpia
+  prepararSuperficies([]);
+  $('#seccionResultados').hidden = true;
+  $('#barraVib').hidden = true; $('#ctrlCargas').hidden = true; $('#colorCargas').checked = false;
+  $('#avisosArchivo').hidden = true; $('#estadoPaso').hidden = true;
+  $('#etiquetaModelo').textContent = 'sin molécula';
+  $('#infoMolecula').textContent = 'Proyecto nuevo: dibuje una molécula, abra un archivo .in o escriba el código.';
+  // Ventana de código en blanco
+  abrirEditor('', '', { desplazar: false });
+  editor.propio = false;
+  $('#editorEstado').innerHTML = '<span class="pend">Proyecto nuevo: escriba aquí el código de Psi4 o dibuje una molécula y pulse «Generar geometría 3D».</span>';
+  actualizarEstimacion();
+  dibujarMedida();
+  $('#tarjetaEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  $('#editorTexto').focus({ preventScroll: true });
+}
+
+// Nombre del cálculo: el «Título»; si está vacío, el nombre de «molecule nombre { … }» o el del
+// archivo abierto. Sin ninguno se avisa que no se ha asignado un nombre.
+function tituloParaCalculo(datos) {
+  const actual = $('#titulo').value.trim();
+  if (actual) return actual;
+  const formula = estado.geom?.formula ? nombreMolecula(estado.geom.formula) : '';
+  const generico = !datos.titulo || datos.titulo === 'molecula' || datos.titulo === formula;
+  const t = !generico ? datos.titulo : editor.archivo ? editor.archivo.replace(/\.[^.]+$/, '') : '';
+  if (!t) {
+    alert('No se ha asignado un nombre a la molécula.\n\nEscríbalo en «Título» (o en el código: molecule nombre { … }) y vuelva a ejecutar. Con ese nombre se guardan los archivos .out.');
+    $('#titulo').focus();
+    return null;
+  }
+  return t;
+}
+
+// El único botón para calcular: ejecuta el código de la ventana tal como está
 async function ejecutar() {
   const boton = $('#calcular');
   if (boton.disabled) return;
   boton.disabled = true;
   try {
-    if (!estado.geom || estado.modificada) {
-      // Dibujo nuevo o editado: se genera la geometría 3D y, con ella, el código
-      const usarDibujo = !editadoAMano() || confirm('Cambió el dibujo, pero el código fue editado a mano. ¿Generar la geometría del dibujo y regenerar el código? (Cancelar ejecuta el código tal como está.)');
-      if (usarDibujo) {
+    if (!textoEditor().trim()) {
+      // Ventana vacía: el código se genera con el dibujo y las opciones del formulario
+      if (!estado.geom || estado.modificada) await generar3D();
+      if (!sincronizarCodigo({ forzar: true })) throw new Error(estado.errorFormulario || 'No hay código para ejecutar.');
+    } else if (estado.modificada && estado.jsme?.smiles()) {
+      // El código no se toca sin permiso, aunque el dibujo haya cambiado después
+      if (confirm('El dibujo cambió y el código todavía describe la molécula anterior.\n\nAceptar: generar la geometría del dibujo y reescribir el código.\nCancelar: ejecutar el código tal como está.')) {
         await generar3D();
         sincronizarCodigo({ forzar: true });
       }
     }
-    if (!textoEditor() && !sincronizarCodigo({ forzar: true })) throw new Error(estado.errorFormulario || 'No hay código para ejecutar.');
     const datos = validarEditor();
     if (!datos) { $('#editorTexto').focus(); throw new Error('Corrija el código antes de ejecutar (vea el mensaje bajo el código).'); }
-    // Si el código no coincide con la molécula y el formulario, se aplica primero (el código manda)
-    if (editadoAMano() || formularioDistinto(datos)) await aplicarEditor();
-    await lanzarCalculo();
+    // Lo que el servidor no aplicará se avisa antes de ejecutar (no se ignora en silencio)
+    const na = datos.noAplicado || [];
+    if (na.length && !confirm(`Estas líneas del código no se aplican en el servidor (sólo se interpretan la molécula, el método, la base, el tipo de cálculo y sus opciones):\n${na.slice(0, 8).map((l) => `  • ${l}`).join('\n')}${na.length > 8 ? `\n  … y ${na.length - 8} más` : ''}\n\n¿Ejecutar de todos modos?`)) return;
+    const titulo = tituloParaCalculo(datos);
+    if (!titulo) return;
+    // El visor, el dibujo y el formulario siguen al código; el texto del código no se modifica
+    if (formularioDistinto(datos) || estado.geom?.claveEntrada !== claveEntrada(datos)) await aplicarEditor();
+    $('#titulo').value = titulo;
+    await lanzarCalculo(datos, titulo);
     $('#seccionResultados').scrollIntoView({ behavior: 'smooth', block: 'start' });
   } catch (e) {
     alert(e.message);
@@ -1079,11 +1267,17 @@ async function mostrarCodigoTrabajo(id) {
   const mismaMolecula = leerCoordenadas(g.xyz || '').map((a) => a.e).join() === coords.map((a) => a.e).join();
   // La geometría del trabajo pasa a ser la actual (para regenerar el código o volver a ejecutarlo)
   estado.geom = { ...(mismaMolecula ? g : {}), xyz: datos.xyz, natomos: coords.length, formula: info.formula || g.formula || datos.titulo, smiles: mismaMolecula ? g.smiles : '' };
-  if (!mismaMolecula) estado.seleccion = [];
+  if (!mismaMolecula) olvidarMedidas();
   estado.modificada = false;
-  abrirEditor(texto, `${nombreSeguro(info.titulo || datos.titulo)}.in`, { desplazar: false, trabajo: { id, titulo: info.titulo || datos.titulo } });
-  if (info.titulo) $('#titulo').value = info.titulo;
+  const trabajo = { id, titulo: info.titulo || datos.titulo };
+  if (texto.replace(/\r\n/g, '\n') === textoEditor()) {
+    editor.trabajo = trabajo; // es el código que se acaba de ejecutar: no se toca
+  } else {
+    abrirEditor(texto, `${nombreSeguro(info.titulo || datos.titulo)}.in`, { desplazar: false, trabajo });
+    editor.propio = false;
+  }
   ponerFormulario(datos, info.titulo || datos.titulo);
+  if (info.titulo) $('#titulo').value = info.titulo; // el título del cálculo, aunque el código use otro nombre
   marcarAplicado(texto, datos);
   actualizarEstimacion();
 }
@@ -1105,7 +1299,7 @@ async function guardarArchivoTrabajo(cual) {
   const nombre = nombreSeguro(t.titulo);
   try {
     if (cual === 'out') {
-      descargar(await api(`/api/calculos/${t.id}/archivo/salida.dat`), `${nombre}.out`);
+      await guardarSalida(t);
     } else if (cual === 'in') {
       let texto;
       try {
@@ -1138,20 +1332,16 @@ async function guardarArchivoTrabajo(cual) {
 }
 
 // ---------- Cálculos ----------
-// Envía al servidor la molécula del visor con las opciones del formulario
-async function lanzarCalculo() {
-  if (estado.modificada || !estado.geom) await generar3D();
-  const g = estado.geom;
+// Envía al servidor el código de la ventana tal cual (el servidor lo guarda como entrada.in y
+// arma el cálculo leyendo ese mismo texto); «datos» es lo que la página leyó de él
+async function lanzarCalculo(datos, titulo) {
+  const g = estado.geom || {};
   const cuerpo = {
-    xyz: g.xyz, formula: g.formula, smiles: g.smiles,
-    titulo: $('#titulo').value.trim() || g.formula,
-    metodo: $('#metodo').value, base: $('#base').value, tarea: tareaEfectiva(),
-    carga: parseInt($('#carga').value, 10), multiplicidad: parseInt($('#multiplicidad').value, 10),
-    mep: $('#mep').checked,
-    irc: tareaEfectiva() === 'irc' ? opcionesIRCForm() : undefined,
-    scan: ['scan', 'congelar'].includes(tareaEfectiva()) ? opcionesScanForm() : undefined,
-    solvente: solventeForm()?.solvente || 'ninguno',
-    modelo_pcm: solventeForm()?.modelo,
+    codigo: textoEditor(), titulo,
+    xyz: datos.xyz, formula: g.formula || '', smiles: g.smiles || '',
+    metodo: datos.metodo, base: datos.base, tarea: datos.tarea, carga: datos.carga, multiplicidad: datos.multiplicidad,
+    mep: $('#mep').checked, irc: datos.irc || undefined, scan: datos.scan || undefined,
+    solvente: datos.pcm?.solvente || 'ninguno', modelo_pcm: datos.pcm?.modelo,
   };
   const t = await api('/api/calculos', { method: 'POST', body: JSON.stringify(cuerpo) });
   // En un IRC los enlaces cambian a lo largo del camino: no se fijan los del dibujo
@@ -1174,10 +1364,81 @@ function cronometro() {
   $('#cronometro').textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
+// ---------- Corridas secuenciales (optimización → TS → IRC) ----------
+// Al terminar un paso, su geometría final queda en memoria y en el código de la ventana, lista
+// para el paso siguiente, y la salida se guarda como <nombre>_OPT.out, _TS.out, _IRC.out…
+const SUFIJO_SALIDA = { optimizacion: '_OPT', frecuencias: '_OPT_FREQ', ts: '_TS', irc: '_IRC', energia: '_SP', scan: '_SCAN', congelar: '_CONG' };
+const TAREAS_GEOMETRIA_NUEVA = ['optimizacion', 'frecuencias', 'ts', 'congelar'];
+
+function nombreSalida(t) {
+  const base = nombreSeguro(t.titulo);
+  const suf = SUFIJO_SALIDA[t.tarea] || '';
+  return `${base.toUpperCase().endsWith(suf) ? base : base + suf}.out`;
+}
+
+async function guardarSalida(t) {
+  descargar(await api(`/api/calculos/${t.id}/archivo/salida.dat`), nombreSalida(t));
+}
+
+// Cambia sólo las coordenadas cartesianas del bloque «molecule { … }» (el resto del código queda
+// igual). Devuelve null si el bloque no tiene una línea «símbolo x y z» por átomo, en Å.
+function reemplazarCoordenadas(texto, coords) {
+  const m = /molecule\s*[\w-]*\s*\{([\s\S]*?)\}/i.exec(texto);
+  if (!m) return null;
+  const cuerpo = m[1];
+  if (/^\s*units?\s+(bohr|au|a\.u\.)/im.test(cuerpo)) return null;
+  const num = '([-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eEdD][-+]?\\d+)?)';
+  const linea = new RegExp(`^(\\s*)([A-Za-z]{1,2})(\\w*)\\s+${num}\\s+${num}\\s+${num}(\\s*(?:#.*)?)$`);
+  let k = 0; let ok = true;
+  const nuevo = cuerpo.split('\n').map((l) => {
+    const a = linea.exec(l);
+    if (!a) return l;
+    const c = coords[k++];
+    if (!c || a[2].toLowerCase() !== c.e.toLowerCase()) { ok = false; return l; }
+    return `${a[1]}${(a[2] + a[3]).padEnd(2)} ${c.p.map((v) => v.toFixed(8).padStart(14)).join(' ')}${a[7]}`;
+  }).join('\n');
+  if (!ok || k !== coords.length) return null;
+  const ini = m.index + m[0].indexOf('{') + 1;
+  return texto.slice(0, ini) + nuevo + texto.slice(ini + cuerpo.length);
+}
+
+function llevarGeometriaAlSiguientePaso(t) {
+  const r = t.resultado;
+  if (!r?.geometria_xyz || !TAREAS_GEOMETRIA_NUEVA.includes(t.tarea)) return;
+  const coords = leerCoordenadas(r.geometria_xyz);
+  if (!coords.length) return;
+  const g = estado.geom || {};
+  const molblock = molblockCon(estado.molblocks.get(t.id) || g.molblock, coords) || g.molblock;
+  estado.geom = { ...g, xyz: coords.map((c) => `${c.e} ${c.p.map((v) => v.toFixed(8)).join(' ')}`).join('\n'), natomos: coords.length, molblock };
+  estado.modificada = false;
+  const tipo = { optimizacion: 'optimizada', frecuencias: 'optimizada', ts: 'del estado de transición', congelar: 'con las coordenadas congeladas' }[t.tarea];
+  let nota = `La geometría ${tipo} de «${t.titulo}» quedó en memoria para el paso siguiente`;
+  const texto = textoEditor();
+  const nuevo = texto ? reemplazarCoordenadas(texto, coords) : null;
+  if (nuevo != null) {
+    $('#editorTexto').value = nuevo;
+    pintarLineas();
+    const propio = editor.propio;
+    marcarAplicado(nuevo, leerEntradaPsi4(nuevo));
+    editor.propio = propio;
+    editor.trabajo = null;
+    nota += ': el código de la ventana ya la usa (sólo cambiaron las coordenadas).';
+  } else if (!editadoAMano() && sincronizarCodigo({ forzar: true })) {
+    nota += ': el código se regeneró con ella.';
+  } else {
+    nota += ', pero no se pudo poner en el código (¿coordenadas en Z-matrix o en bohr?). Use «Regenerar desde el formulario».';
+  }
+  $('#infoMolecula').textContent = nota;
+  $('#estadoPaso').textContent = nota;
+  $('#estadoPaso').hidden = false;
+  validarEditor();
+}
+
 function seguir(id) {
   const token = ++estado.token;
   estado.trabajo = id;
-  mostrarCodigoTrabajo(id); // la ventana de código muestra el .in de este trabajo (IRC, frecuencias, historial…)
+  $('#estadoPaso').hidden = true;
+  const codigoListo = mostrarCodigoTrabajo(id); // la ventana de código muestra el .in de este trabajo (IRC, frecuencias, historial…)
   estado.resultado = null;
   estado.vivo = null;
   detenerVivo();
@@ -1229,6 +1490,12 @@ function seguir(id) {
       finSeguimiento();
       if (t.estado === 'terminado' && t.resultado) {
         mostrarResultado(t);
+        // Después de cargar el código del trabajo, su geometría final pasa al paso siguiente
+        codigoListo.then(() => { if (token === estado.token) llevarGeometriaAlSiguientePaso(t); });
+        if (vioCalcular) {
+          // Cada paso guarda su salida: nombre_OPT.out, nombre_TS.out, nombre_IRC.out…
+          guardarSalida(t).catch((e) => { $('#estadoPaso').textContent = `No se pudo guardar ${nombreSalida(t)}: ${e.message}`; $('#estadoPaso').hidden = false; });
+        }
         if (vioCalcular && t.resultado.iboview?.puntos_molden?.length) abrirDialogoMolden({ alTerminar: true });
       } else mostrarError(t);
     }
@@ -2414,10 +2681,11 @@ function eventos() {
   $('#generar3d').addEventListener('click', () => generar3D({ explicito: true }).catch((e) => { $('#infoMolecula').textContent = e.message; }));
   $('#formCalculo').addEventListener('submit', (e) => e.preventDefault());
   $('#calcular').addEventListener('click', ejecutar);
+  $('#proyectoNuevo').addEventListener('click', nuevoProyecto);
   // Editor de la entrada
   const ta = $('#editorTexto');
   let temporizador = null;
-  ta.addEventListener('input', () => { pintarLineas(); clearTimeout(temporizador); temporizador = setTimeout(validarEditor, 250); });
+  ta.addEventListener('input', () => { editor.propio = true; pintarLineas(); clearTimeout(temporizador); temporizador = setTimeout(validarEditor, 250); });
   ta.addEventListener('scroll', () => { $('#editorLineas').scrollTop = ta.scrollTop; });
   ta.addEventListener('keydown', teclasEditor);
   $('#editorAplicar').addEventListener('click', (e) => aplicarDesdeEditor(e.currentTarget));
@@ -2463,6 +2731,8 @@ function eventos() {
   $('#png').addEventListener('click', () => descargar(estado.visor.pngURI(), 'molecula.png'));
   $('#medir').addEventListener('click', alternarMedir);
   $('#medirLimpiar').addEventListener('click', reiniciarMedida);
+  $('#medidaTipo').addEventListener('click', (e) => { const b = e.target.closest('button[data-n]'); if (b) elegirTipoMedida(Number(b.dataset.n)); });
+  $('#medidaLista').addEventListener('click', (e) => { const b = e.target.closest('[data-quitar-medida]'); if (b) quitarMedida(Number(b.dataset.quitarMedida)); });
 
   // Barra «Vibración» del visor
   $('#vibPlay').addEventListener('click', () => {
