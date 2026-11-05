@@ -63,6 +63,14 @@ el potencial electrostático y las vibraciones.
      hay optimización previa sin restricciones. El .out termina con «OPTIMIZACIÓN CON …
      CONGELADA». Se lee de un .in con `frozen_*`/`fixed_*` y sin bucle (valor de `colocar(…)`, de
      `fixed_*` o el de la geometría).
+     **Varios valores**: escriba hasta 20 separados por «;», «,» o espacios (punto decimal), p. ej.
+     `1.35; 1.45; 1.55`. Cada valor es una optimización **independiente** que parte de la geometría
+     inicial (a diferencia del scan, que parte del punto anterior); los valores se ordenan de menor a
+     mayor. El resultado se muestra en la pestaña «Valores congelados» (gráfico, tabla, CSV, XYZ
+     animado), con un .molden numerado por valor y el .zip para IboView; orbitales y cargas
+     corresponden al valor de menor energía. El .out termina con «OPTIMIZACIONES CON … CONGELADA EN N
+     VALORES». En el .in generado es un bucle que vuelve a `set_geometry(inicial)` en cada valor, y
+     así se reconoce al leerlo.
    - **Solvente (PCM, PCMSolver)**: «Sin solvente (fase gaseosa)» por defecto, o uno de los 20
      solventes predefinidos de PCMSolver (agua, carbonato de propileno, DMSO, nitrometano,
      acetonitrilo, metanol, etanol, acetona, 1,2-dicloroetano, diclorometano, THF, anilina,

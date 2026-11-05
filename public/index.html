@@ -166,7 +166,7 @@
             <label class="chk"><input type="checkbox" class="scan-tipo" value="diedro"> Ángulo diedro <span class="info">(4 átomos)</span></label>
           </div>
           <div class="scan-modo" id="scanModo" role="radiogroup" aria-label="Qué hacer con la coordenada" hidden>
-            <label class="chk"><input type="radio" name="scanModo" value="congelar"> Congelar en un valor <span class="info">(una optimización, sin scan)</span></label>
+            <label class="chk"><input type="radio" name="scanModo" value="congelar"> Congelar en uno o varios valores <span class="info">(una optimización por valor, sin scan)</span></label>
             <label class="chk"><input type="radio" name="scanModo" value="scan" checked> Scan relajado <span class="info">(varios valores)</span></label>
           </div>
           <div class="scan-campos" id="scanCampos" hidden>
@@ -174,7 +174,7 @@
             <label><span id="scanJTexto">Átomo j</span> <input id="scanJ" type="number" min="1" step="1" value="2"></label>
             <label id="scanKCaja"><span id="scanKTexto">Átomo k</span> <input id="scanK" type="number" min="1" step="1" value="3"></label>
             <label id="scanLCaja">Átomo l <input id="scanL" type="number" min="1" step="1" value="4"></label>
-            <label class="solo-congelar" hidden>Valor congelado (<span class="scan-u">Å</span>) <input id="scanValor" type="number" step="any"></label>
+            <label class="solo-congelar valores-congelar" hidden>Valor(es) congelado(s) (<span class="scan-u">Å</span>) <input id="scanValor" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" placeholder="ej.: 1.50; 1.80; 2.10" title="Un valor o varios separados por «;», «,» o espacios (máximo 20): una optimización independiente por valor"></label>
             <label class="solo-scan">Desde (<span class="scan-u">Å</span>) <input id="scanDesde" type="number" step="any"></label>
             <label class="solo-scan">Hasta (<span class="scan-u">Å</span>) <input id="scanHasta" type="number" step="any"></label>
             <label class="solo-scan">Paso (<span class="scan-u">Å</span>) <input id="scanPaso" type="number" step="any" min="0.01" value="0.1"></label>

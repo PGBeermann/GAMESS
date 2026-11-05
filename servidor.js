@@ -66,7 +66,7 @@ const TAREAS = [
   { id: 'ts', nombre: 'Estado de transición (TS) + frecuencias' },
   { id: 'irc', nombre: 'Camino de reacción IRC (desde un TS)' },
   { id: 'scan', nombre: 'Scan relajado (distancia, ángulo o diedro)' },
-  { id: 'congelar', nombre: 'Optimización con una coordenada congelada' },
+  { id: 'congelar', nombre: 'Optimización con una coordenada congelada (uno o varios valores)' },
 ];
 
 // Solventes predefinidos de PCMSolver: la tabla está en public/entrada.js (la usan también la página y el lector de .in)
@@ -101,10 +101,13 @@ function opcionesScan(o = {}, natomos = 0, congelar = false) {
     throw new Error(`Scan de ${tipo}: indique ${c.natom} átomos distintos entre 1 y ${natomos}.`);
   }
   const valores = (Array.isArray(o.valores) ? o.valores : []).map(Number).filter(Number.isFinite);
-  if (congelar && valores.length !== 1) throw new Error('Coordenada congelada: indique un solo valor.');
-  if (valores.length < 1 || valores.length > 40) throw new Error(`Scan: se necesitan entre 1 y 40 ${c.nombre}.`);
-  if (valores.some((v) => v < c.min || v > c.max)) throw new Error(`Scan: los ${c.nombre} deben estar entre ${c.min} y ${c.max} ${c.unidad}.`);
-  return { tipo, atomos, valores: valores.map((v) => Math.round(v * 10000) / 10000) };
+  const quien = congelar ? 'Coordenada congelada' : 'Scan';
+  // Coordenada congelada: hasta 20 valores (una optimización independiente por valor)
+  const maximo = congelar ? 20 : 40;
+  if (valores.length < 1 || valores.length > maximo) throw new Error(`${quien}: se necesitan entre 1 y ${maximo} ${c.nombre}.`);
+  if (valores.some((v) => v < c.min || v > c.max)) throw new Error(`${quien}: los ${c.nombre} deben estar entre ${c.min} y ${c.max} ${c.unidad}.`);
+  const redondeados = valores.map((v) => Math.round(v * 10000) / 10000);
+  return { tipo, atomos, valores: congelar ? [...new Set(redondeados)].sort((a, b) => a - b) : redondeados };
 }
 
 // Opciones del IRC (dirección, puntos por dirección y tamaño de paso en bohr·amu^½), acotadas
