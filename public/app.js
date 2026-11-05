@@ -730,6 +730,7 @@ async function aplicarEditor(avisosExtra = [], { forzar = false } = {}) {
     $('#etiquetaModelo').textContent = `${g.formula} · geometría de ${nombre}`;
     if (g.aviso) avisos.push(g.aviso);
   }
+  estado.geom.zmat = datos.zmat || null; // si el código usa matriz Z, se conserva ese formato
   // Sin nombre en «molecule { … }»: se usa el nombre del archivo, si lo hay
   const base = editor.archivo ? editor.archivo.replace(/\.[^.]+$/, '') : '';
   if (!datos.titulo) {
@@ -774,11 +775,29 @@ function ponerFormulario(datos, tituloPorDefecto = '') {
 async function abrirArchivo(archivo) {
   if (!archivo) return;
   try {
-    if (archivo.size > 300000) throw new Error('El archivo es demasiado grande (máx. 300 kB).');
+    // Las salidas de Psi4 (.out) pueden ser grandes; las entradas, no
+    if (archivo.size > 80e6) throw new Error('El archivo es demasiado grande (máx. 80 MB).');
     let texto = await archivo.text();
     let nombre = archivo.name;
     const extra = [];
-    if (/\.xyz$/i.test(nombre)) {
+    const esSalida = /\.(out|log)$/i.test(nombre) || (!/molecule\s*[\w-]*\s*\{/i.test(texto) && esSalidaPsi4(texto));
+    if (!esSalida && archivo.size > 300000) throw new Error('El archivo de entrada es demasiado grande (máx. 300 kB).');
+    if (esSalida) {
+      // Salida de Psi4: se toma la geometría calculada y se arma un .in de energía (punto simple),
+      // en el mismo formato (matriz Z o cartesianas), con la carga, la multiplicidad, el método y la base
+      const s = leerSalidaPsi4(texto);
+      const base = archivo.name.replace(/\.[^.]+$/, '').replace(/_(OPT_FREQ|OPT|TS|IRC|SCAN|CONG|SP)$/i, '');
+      const metodo = s.metodo || $('#metodo').value || 'b3lyp';
+      const bas = s.base || $('#base').value || '6-31g*';
+      nombre = `${base}_SP.in`;
+      texto = generarEntradaPsi4({
+        titulo: base, xyz: s.xyz, zmat: s.zmat, carga: s.carga, multiplicidad: s.multiplicidad, metodo, base: bas, tarea: 'energia',
+        memoria: estado.opciones?.memoria || '2 GB', pcm: s.pcm, basico: true,
+        nota: `Energía en un punto con ${s.origen} de ${archivo.name}`,
+      });
+      extra.push(...s.avisos,
+        `Se leyó ${s.origen} de ${archivo.name} (${s.zmat ? 'en matriz Z, que se conserva' : 'en cartesianas'}) y se armó «${nombre}», un cálculo de energía en un punto${s.metodo && s.base ? ` con el mismo método y base (${metodo.toUpperCase()}/${bas})` : ` con ${metodo.toUpperCase()}/${bas}`}${s.pcm ? ' y el mismo solvente' : ''}.`);
+    } else if (/\.xyz$/i.test(nombre)) {
       // Un .xyz sólo trae coordenadas: se arma una entrada con las opciones del formulario
       const x = leerXYZ(texto);
       nombre = nombre.replace(/\.xyz$/i, '.in');
@@ -790,8 +809,8 @@ async function abrirArchivo(archivo) {
       extra.push('Un .xyz no indica carga, multiplicidad ni método: se armó la entrada con carga 0, multiplicidad 1 y las opciones del formulario. Corríjalas en el código si hace falta.');
     }
     // El código del archivo se usa tal cual: el formulario ya no lo reescribe
-    abrirEditor(texto, nombre, { archivo: archivo.name });
-    editor.propio = !/\.xyz$/i.test(archivo.name);
+    abrirEditor(texto, nombre, { archivo: esSalida ? nombre : archivo.name });
+    editor.propio = !esSalida && !/\.xyz$/i.test(archivo.name);
     $('#titulo').value = '';
     await aplicarEditor(extra, { forzar: true });
   } catch (e) {
@@ -1101,8 +1120,14 @@ function codigoDesdeFormulario() {
   const g = estado.geom;
   const titulo = $('#titulo').value.trim() || g.formula || 'molecula';
   const tarea = tareaEfectiva();
+  // Si la molécula vino en matriz Z, el código se escribe en matriz Z con la geometría actual
+  let zmat = null;
+  if (g.zmat) {
+    const cuerpo = actualizarCuerpoMolecula(g.zmat.cuerpo, leerCoordenadas(g.xyz), g.zmat.unidades === 'bohr' ? 0.52917721067 : 1);
+    if (cuerpo) zmat = { ...g.zmat, cuerpo };
+  }
   const texto = generarEntradaPsi4({
-    titulo, xyz: g.xyz, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
+    titulo, xyz: g.xyz, zmat, carga: parseInt($('#carga').value, 10) || 0, multiplicidad: parseInt($('#multiplicidad').value, 10) || 1,
     metodo: $('#metodo').value, base: $('#base').value, tarea,
     memoria: estado.opciones?.memoria || '2 GB', mep: $('#mep').checked, irc: opcionesIRCForm(),
     scan: tarea === 'scan' || tarea === 'congelar' ? opcionesScanForm() : null,
@@ -1266,7 +1291,7 @@ async function mostrarCodigoTrabajo(id) {
   const g = estado.geom || {};
   const mismaMolecula = leerCoordenadas(g.xyz || '').map((a) => a.e).join() === coords.map((a) => a.e).join();
   // La geometría del trabajo pasa a ser la actual (para regenerar el código o volver a ejecutarlo)
-  estado.geom = { ...(mismaMolecula ? g : {}), xyz: datos.xyz, natomos: coords.length, formula: info.formula || g.formula || datos.titulo, smiles: mismaMolecula ? g.smiles : '' };
+  estado.geom = { ...(mismaMolecula ? g : {}), xyz: datos.xyz, natomos: coords.length, formula: info.formula || g.formula || datos.titulo, smiles: mismaMolecula ? g.smiles : '', zmat: datos.zmat || null };
   if (!mismaMolecula) olvidarMedidas();
   estado.modificada = false;
   const trabajo = { id, titulo: info.titulo || datos.titulo };
@@ -1382,28 +1407,9 @@ async function guardarSalida(t) {
   descargar(await api(`/api/calculos/${t.id}/archivo/salida.dat`), nombreSalida(t));
 }
 
-// Cambia sólo las coordenadas cartesianas del bloque «molecule { … }» (el resto del código queda
-// igual). Devuelve null si el bloque no tiene una línea «símbolo x y z» por átomo, en Å.
-function reemplazarCoordenadas(texto, coords) {
-  const m = /molecule\s*[\w-]*\s*\{([\s\S]*?)\}/i.exec(texto);
-  if (!m) return null;
-  const cuerpo = m[1];
-  if (/^\s*units?\s+(bohr|au|a\.u\.)/im.test(cuerpo)) return null;
-  const num = '([-+]?(?:\\d+\\.?\\d*|\\.\\d+)(?:[eEdD][-+]?\\d+)?)';
-  const linea = new RegExp(`^(\\s*)([A-Za-z]{1,2})(\\w*)\\s+${num}\\s+${num}\\s+${num}(\\s*(?:#.*)?)$`);
-  let k = 0; let ok = true;
-  const nuevo = cuerpo.split('\n').map((l) => {
-    const a = linea.exec(l);
-    if (!a) return l;
-    const c = coords[k++];
-    if (!c || a[2].toLowerCase() !== c.e.toLowerCase()) { ok = false; return l; }
-    return `${a[1]}${(a[2] + a[3]).padEnd(2)} ${c.p.map((v) => v.toFixed(8).padStart(14)).join(' ')}${a[7]}`;
-  }).join('\n');
-  if (!ok || k !== coords.length) return null;
-  const ini = m.index + m[0].indexOf('{') + 1;
-  return texto.slice(0, ini) + nuevo + texto.slice(ini + cuerpo.length);
-}
-
+// La geometría nueva se pone en el código con actualizarGeometriaCodigo (entrada.js): en
+// cartesianas cambian x, y, z; en matriz Z se recalculan distancias, ángulos y diedros (o sus
+// variables) con las mismas referencias, sin pasarla a cartesianas.
 function llevarGeometriaAlSiguientePaso(t) {
   const r = t.resultado;
   if (!r?.geometria_xyz || !TAREAS_GEOMETRIA_NUEVA.includes(t.tarea)) return;
@@ -1411,12 +1417,17 @@ function llevarGeometriaAlSiguientePaso(t) {
   if (!coords.length) return;
   const g = estado.geom || {};
   const molblock = molblockCon(estado.molblocks.get(t.id) || g.molblock, coords) || g.molblock;
-  estado.geom = { ...g, xyz: coords.map((c) => `${c.e} ${c.p.map((v) => v.toFixed(8)).join(' ')}`).join('\n'), natomos: coords.length, molblock };
+  // La matriz Z en memoria también pasa a la geometría final (para regenerar el código en ese formato)
+  const zcuerpo = g.zmat ? actualizarCuerpoMolecula(g.zmat.cuerpo, coords, g.zmat.unidades === 'bohr' ? 0.52917721067 : 1) : null;
+  estado.geom = {
+    ...g, xyz: coords.map((c) => `${c.e} ${c.p.map((v) => v.toFixed(8)).join(' ')}`).join('\n'), natomos: coords.length, molblock,
+    zmat: zcuerpo ? { ...g.zmat, cuerpo: zcuerpo } : null,
+  };
   estado.modificada = false;
   const tipo = { optimizacion: 'optimizada', frecuencias: 'optimizada', ts: 'del estado de transición', congelar: 'con las coordenadas congeladas' }[t.tarea];
   let nota = `La geometría ${tipo} de «${t.titulo}» quedó en memoria para el paso siguiente`;
   const texto = textoEditor();
-  const nuevo = texto ? reemplazarCoordenadas(texto, coords) : null;
+  const nuevo = texto ? actualizarGeometriaCodigo(texto, coords) : null;
   if (nuevo != null) {
     $('#editorTexto').value = nuevo;
     pintarLineas();
@@ -1424,11 +1435,11 @@ function llevarGeometriaAlSiguientePaso(t) {
     marcarAplicado(nuevo, leerEntradaPsi4(nuevo));
     editor.propio = propio;
     editor.trabajo = null;
-    nota += ': el código de la ventana ya la usa (sólo cambiaron las coordenadas).';
+    nota += `: el código de la ventana ya la usa (sólo cambió la geometría${estado.geom.zmat ? ', en matriz Z' : ''}).`;
   } else if (!editadoAMano() && sincronizarCodigo({ forzar: true })) {
     nota += ': el código se regeneró con ella.';
   } else {
-    nota += ', pero no se pudo poner en el código (¿coordenadas en Z-matrix o en bohr?). Use «Regenerar desde el formulario».';
+    nota += ', pero no se pudo poner en el código (¿átomos ficticios al principio de la matriz Z o una geometría escrita de otra forma?). Use «Regenerar desde el formulario».';
   }
   $('#infoMolecula').textContent = nota;
   $('#estadoPaso').textContent = nota;

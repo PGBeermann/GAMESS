@@ -183,7 +183,130 @@
       atomosL.push(l);
     }
     if (fragmentos) avisos.push('La molécula tenía varios fragmentos (--): se tratan como un solo sistema (carga total).');
-    return { xyz: geometria(atomosL, variables, factor), carga, mult };
+    // Matriz Z (alguna línea no es «símbolo x y z»): se guarda tal cual para no pasarla a cartesianas
+    const esZmat = atomosL.some((l) => l.split(/[\s,]+/).filter(Boolean).length !== 4);
+    const zmat = esZmat ? {
+      cuerpo: [...atomosL, ...(Object.keys(variables).length ? [''] : []), ...Object.entries(variables).map(([k, v]) => `${k} = ${v}`)].join('\n'),
+      unidades: factor === 1 ? 'angstrom' : 'bohr',
+    } : null;
+    return { xyz: geometria(atomosL, variables, factor), carga, mult, zmat };
+  }
+
+  // ---- Poner una geometría nueva en el bloque molecule sin cambiar su formato ----
+  // Cartesianas: se cambian x y z. Matriz Z: se recalculan las distancias, ángulos y diedros de
+  // cada línea (o sus variables) con las mismas referencias. coords: [{e, p: [x, y, z]}] en Å.
+  const PALABRA_MOLECULA = /^(units?|symmetry|no_reorient|noreorient|no_com|nocom|pubchem|efp|fix_|zmat)/i;
+  const dist3 = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const punto3 = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  // Inversa de colocar(): r, θ y φ de P respecto de A, B y C (mismo convenio que la lectura)
+  function internas(P, A, B, C) {
+    const v = resta(P, A);
+    const r = Math.hypot(...v);
+    const bc = unit(resta(A, B));
+    const x = punto3(v, bc);
+    const theta = (Math.acos(Math.max(-1, Math.min(1, -x / r))) * 180) / Math.PI;
+    if (!C) return { r, theta };
+    const n = unit(cruz(resta(B, C), bc));
+    const m = cruz(n, bc);
+    const phi = (Math.atan2(punto3(v, n), punto3(v, m)) * 180) / Math.PI;
+    return { r, theta, phi };
+  }
+
+  function actualizarCuerpoMolecula(cuerpo, coords, factorDado = null) {
+    const lineas = String(cuerpo).split('\n');
+    let factor = factorDado;
+    if (factor == null) factor = lineas.some((l) => /^\s*units?\s+(bohr|au|a\.u\.)/i.test(l.replace(/#.*$/, ''))) ? BOHR_A_ANG : 1;
+    const info = lineas.map((l) => {
+      const codigo = l.replace(/#.*$/, '');
+      const comentario = l.slice(codigo.length);
+      const indent = /^\s*/.exec(codigo)[0];
+      const s = codigo.trim();
+      if (!s || s === '--' || PALABRA_MOLECULA.test(s)) return { tipo: 'otra' };
+      const t = s.split(/[\s,]+/).filter(Boolean);
+      if (t.length === 2 && /^[-+]?\d+$/.test(t[0]) && /^\d+$/.test(t[1])) return { tipo: 'otra' };
+      const v = /^([A-Za-z_]\w*)\s*=\s*([-+]?[\d.]+(?:[eEdD][-+]?\d+)?)$/.exec(s);
+      if (v) return { tipo: 'var', nombre: v[1], valor: aNumero(v[2]), indent, comentario };
+      return { tipo: 'atomo', t, indent, comentario };
+    });
+    const vars = {};
+    info.forEach((x) => { if (x.tipo === 'var') vars[x.nombre] = x.valor; });
+    const viejo = (tok) => {
+      if (esNumero(tok)) return aNumero(tok);
+      const neg = tok.startsWith('-'); const n = neg ? tok.slice(1) : tok;
+      if (!(n in vars)) throw new Error(n);
+      return neg ? -vars[n] : vars[n];
+    };
+    const P = []; const etiquetas = []; const nuevas = {}; let k = 0;
+    const ref = (tok) => (/^\d+$/.test(tok) ? parseInt(tok, 10) - 1 : etiquetas.findIndex((e) => e.toLowerCase() === tok.toLowerCase()));
+    try {
+      for (const x of info) {
+        if (x.tipo !== 'atomo') continue;
+        const t = x.t;
+        const sim = simboloDe(t[0]);
+        if (!sim) return null;
+        const R = [1, 3, 5].map((i) => (t[i] != null && t.length > 4 ? P[ref(t[i])] : undefined));
+        if (t.length === 3) R[0] = P[ref(t[1])];
+        let pos;
+        if (sim === 'X') {
+          // Átomo ficticio: se coloca con sus propios valores a partir de los átomos reales
+          if (t.length !== 7 || R.some((r) => !r)) return null;
+          pos = colocar(R[0], R[1], R[2], viejo(t[2]) * factor, (viejo(t[4]) * Math.PI) / 180, (viejo(t[6]) * Math.PI) / 180);
+        } else {
+          const c = coords[k++];
+          if (!c || c.e.toLowerCase() !== sim.toLowerCase()) return null;
+          pos = c.p;
+          // [posición del token, valor nuevo, 'd' distancia | 'a' ángulo]
+          let cambios = [];
+          if (t.length === 4) cambios = [[1, pos[0] / factor, 'x'], [2, pos[1] / factor, 'x'], [3, pos[2] / factor, 'x']];
+          else if (t.length === 3) { if (!R[0]) return null; cambios = [[2, dist3(pos, R[0]) / factor, 'd']]; }
+          else if (t.length === 5) {
+            if (!R[0] || !R[1]) return null;
+            const q = internas(pos, R[0], R[1]);
+            cambios = [[2, q.r / factor, 'd'], [4, q.theta, 'a']];
+          } else if (t.length === 7) {
+            if (R.some((r) => !r)) return null;
+            const q = internas(pos, R[0], R[1], R[2]);
+            cambios = [[2, q.r / factor, 'd'], [4, q.theta, 'a'], [6, q.phi, 'a']];
+          } else if (t.length !== 1) return null;
+          for (const [i, val, tipo] of cambios) {
+            const tok = t[i];
+            if (esNumero(tok)) t[i] = tipo === 'x' ? val.toFixed(8) : val.toFixed(6);
+            else {
+              const neg = tok.startsWith('-'); const n = neg ? tok.slice(1) : tok;
+              if (!(n in nuevas)) nuevas[n] = { valor: neg ? -val : val, tipo };
+            }
+          }
+          x.cambiado = true;
+        }
+        P.push(pos); etiquetas.push(t[0]);
+      }
+    } catch { return null; } // variable sin definir
+    if (k !== coords.length) return null;
+    return lineas.map((l, i) => {
+      const x = info[i];
+      if (x.tipo === 'atomo' && x.cambiado) {
+        const t = x.t;
+        const texto = t.length === 4
+          ? `${t[0].padEnd(2)} ${t.slice(1).map((v) => (esNumero(v) ? (+v).toFixed(8).padStart(14) : v.padStart(14))).join(' ')}`
+          : t.join('  ');
+        return `${x.indent}${texto}${x.comentario}`;
+      }
+      if (x.tipo === 'var' && nuevas[x.nombre]) {
+        const nv = nuevas[x.nombre];
+        return `${x.indent}${x.nombre} = ${nv.valor.toFixed(nv.tipo === 'x' ? 8 : 6)}${x.comentario}`;
+      }
+      return l;
+    }).join('\n');
+  }
+
+  // Cambia sólo la geometría del bloque «molecule { … }» de un código (null si no se puede)
+  function actualizarGeometriaCodigo(texto, coords) {
+    const m = /molecule\s*[\w-]*\s*\{([\s\S]*?)\}/i.exec(texto);
+    if (!m) return null;
+    const nuevo = actualizarCuerpoMolecula(m[1], coords);
+    if (nuevo == null) return null;
+    const ini = m.index + m[0].indexOf('{') + 1;
+    return texto.slice(0, ini) + nuevo + texto.slice(ini + m[1].length);
   }
 
   function leerEntradaPsi4(texto) {
@@ -193,7 +316,7 @@
     const mol = /molecule\s*([\w-]*)\s*\{([\s\S]*?)\}/i.exec(sinComentarios);
     if (!mol) throw new Error('No se encontró un bloque «molecule { … }» en el archivo .in.');
     const titulo = mol[1] || '';
-    const { xyz, carga, mult } = leerMolecula(mol[2], avisos);
+    const { xyz, carga, mult, zmat } = leerMolecula(mol[2], avisos);
     let resto = sinComentarios.slice(0, mol.index) + sinComentarios.slice(mol.index + mol[0].length);
     // Solvatación PCM: bloque «pcm = { Medium { Solvent = … SolverType = … } … }» + «set pcm true»
     const bpcm = bloquePCM(resto);
@@ -312,7 +435,7 @@
       }
     }
     return {
-      titulo, xyz, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos, noAplicado,
+      titulo, xyz, zmat, carga: carga ?? 0, multiplicidad: mult ?? 1, metodo, base: baseId, tarea, avisos, noAplicado,
       mep: /\bcubeprop\s*\(/i.test(sinBloques), molden: /\bmolden\s*\(/i.test(sinBloques), irc: opcionesIrc, scan: opcionesScan, pcm,
     };
   }
@@ -651,7 +774,9 @@
     ];
   }
 
-  function generarEntradaPsi4({ titulo = 'molecula', xyz, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null, pcm = null }) {
+  // zmat: {cuerpo, unidades} para escribir la molécula en matriz Z (sus líneas y variables) en vez de
+  // cartesianas. basico: sólo lo necesario para la energía (sin oeprop, molden ni superficies).
+  function generarEntradaPsi4({ titulo = 'molecula', xyz, zmat = null, carga = 0, multiplicidad = 1, metodo, base, tarea, memoria = '2 GB', mep = false, fecha = new Date(), irc = null, scan = null, pcm = null, basico = false, nota = '' }) {
     const nombre = String(titulo).normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'molecula';
     const ref = Number(multiplicidad) === 1 ? 'rhf' : 'uhf';
     const llamadas = {
@@ -676,16 +801,20 @@
       scan: tarea === 'scan' ? lineasScan(nombre, metodo, xyz, scan) : [],
       congelar: tarea === 'congelar' ? lineasCongelar(nombre, metodo, xyz, scan) : [],
     }[tarea];
-    const lineasXYZ = String(xyz).trim().split(/\r?\n/).map((l) => {
-      const [el, x, y, z] = l.trim().split(/\s+/);
-      return `  ${el.padEnd(2)} ${(+x).toFixed(8).padStart(14)} ${(+y).toFixed(8).padStart(14)} ${(+z).toFixed(8).padStart(14)}`;
-    });
+    const lineasXYZ = zmat?.cuerpo
+      ? zmat.cuerpo.split(/\r?\n/).map((l) => (l.trim() ? `  ${l.trim()}` : ''))
+      : String(xyz).trim().split(/\r?\n/).map((l) => {
+        const [el, x, y, z] = l.trim().split(/\s+/);
+        return `  ${el.padEnd(2)} ${(+x).toFixed(8).padStart(14)} ${(+y).toFixed(8).padStart(14)} ${(+z).toFixed(8).padStart(14)}`;
+      });
+    const unidades = zmat?.cuerpo && zmat.unidades === 'bohr' ? 'bohr' : 'angstrom';
     const f = fecha instanceof Date ? fecha.toISOString().slice(0, 10) : String(fecha);
     const solv = pcm ? buscarSolvente(pcm.solvente) : null;
     const modeloPcm = solv && MODELOS_PCM.includes(pcm.modelo) ? pcm.modelo : 'IEFPCM';
     return [
       `# Entrada de Psi4 generada por «Química Cuántica con Psi4» (UNACHI) — ${f}`,
       `# ${titulo} · ${metodo.toUpperCase()}/${base} · ${NOMBRE_TAREA[tarea] || tarea}${tarea === 'congelar' && scan?.frecuencias ? ' + frecuencias' : ''}${solv ? ` · en ${solv.nombre} (PCM)` : ' · fase gaseosa'}`,
+      ...(nota ? String(nota).split('\n').map((l) => `# ${l}`) : []),
       '# Ejecutar con:  psi4 archivo.in archivo.out',
       '',
       `memory ${memoria}`,
@@ -693,7 +822,8 @@
       `molecule ${nombre} {`,
       `  ${carga} ${multiplicidad}`,
       ...lineasXYZ,
-      '  units angstrom',
+      ...(zmat?.cuerpo ? [''] : []),
+      `  units ${unidades}`,
       '  symmetry c1',
       '  no_reorient',
       '  no_com',
@@ -727,6 +857,7 @@
         '}',
         '',
       ] : []),
+      ...(basico ? ['# Energía en un punto (la geometría no cambia)', `E = energy('${metodo}')`, ''] : [
       ...llamadas,
       '',
       "oeprop(wfn, 'DIPOLE', 'MULLIKEN_CHARGES', title='SCF')",
@@ -735,10 +866,86 @@
       ...(tarea === 'irc' ? ['# El servidor escribe además un .molden por punto del IRC (irc_001.molden…) para animarlo en IboView'] : []),
       ...(mep ? ['', "# Superficies para visualizar (HOMO, LUMO, densidad y potencial electrostático)", "set cubeprop_tasks ['orbitals', 'esp']", 'cubeprop(wfn)'] : []),
       '',
+      ]),
     ].join('\n');
   }
 
-  const api = { leerEntradaPsi4, leerXYZ, generarEntradaPsi4, SOLVENTES, MODELOS_PCM, buscarSolvente };
+  // ---- Salida de Psi4 (.out): geometría calculada para armar una entrada de energía ----
+  const esSalidaPsi4 = (texto) => /Psi4: An Open-Source Ab Initio|\*\*\* tstart\(\) called on|Geometry \(in (Angstrom|Bohr)\), charge = -?\d+, multiplicity/.test(String(texto));
+  const CABECERA_GEOM = /Geometry \(in (Angstrom|Bohr)\), charge = (-?\d+), multiplicity = (\d+)/;
+  const normalizarEtiqueta = (t) => t.charAt(0).toUpperCase() + t.slice(1).toLowerCase();
+
+  // Bloque que sigue a «Geometry (in Angstrom), charge = …»: tabla cartesiana o matriz Z + variables
+  function bloqueGeometria(lineas, i, avisos) {
+    const cab = CABECERA_GEOM.exec(lineas[i]);
+    const unidad = cab[1].toLowerCase() === 'bohr' ? 'bohr' : 'angstrom';
+    let j = i + 1;
+    while (j < lineas.length && !lineas[j].trim()) j++;
+    let cuerpo;
+    if (/^\s*Center\s+X\s+Y\s+Z/.test(lineas[j] || '')) {
+      const filas = [];
+      for (j += 2; j < lineas.length; j++) {
+        const t = lineas[j].trim().split(/\s+/);
+        if (!lineas[j].trim() || t.length < 4 || !t.slice(1, 4).every(esNumero)) break;
+        if (/^gh\(/i.test(t[0])) throw new Error('La geometría del .out tiene átomos fantasma (Gh): no se admiten.');
+        filas.push(`${normalizarEtiqueta(t[0])} ${t[1]} ${t[2]} ${t[3]}`);
+      }
+      cuerpo = filas.join('\n');
+    } else {
+      const filas = [];
+      for (; j < lineas.length && lineas[j].trim(); j++) {
+        const t = lineas[j].trim().split(/\s+/);
+        filas.push([normalizarEtiqueta(t[0]), ...t.slice(1)].join('  '));
+      }
+      while (j < lineas.length && !lineas[j].trim()) j++;
+      const vars = [];
+      for (; j < lineas.length && /^\s*[A-Za-z_]\w*\s*=\s*[-+]?[\d.]/.test(lineas[j]); j++) vars.push(lineas[j].trim().replace(/\s*=\s*/, ' = '));
+      cuerpo = [...filas, ...(vars.length ? ['', ...vars] : [])].join('\n');
+    }
+    if (!cuerpo.trim()) throw new Error('No se pudo leer la geometría del .out.');
+    const m = leerMolecula(`${cuerpo}\nunits ${unidad}`, avisos);
+    return { xyz: m.xyz, zmat: m.zmat, carga: parseInt(cab[2], 10), multiplicidad: parseInt(cab[3], 10) };
+  }
+
+  function leerSalidaPsi4(texto) {
+    const avisos = [];
+    const t = String(texto).replace(/\r\n/g, '\n');
+    const lineas = t.split('\n');
+    const cabeceras = []; let finalOpt = -1;
+    lineas.forEach((l, i) => {
+      if (CABECERA_GEOM.test(l)) cabeceras.push(i);
+      if (/Final optimized geometry/i.test(l)) finalOpt = i;
+    });
+    if (!cabeceras.length) throw new Error('No se encontró ninguna geometría («Geometry (in Angstrom), charge = …») en el archivo .out.');
+    // La geometría final optimizada si la hay; si no, la última que escribió Psi4
+    let i = cabeceras[cabeceras.length - 1]; let origen = 'la última geometría';
+    if (finalOpt >= 0) {
+      const k = cabeceras.find((c) => c > finalOpt);
+      if (k != null) { i = k; origen = 'la geometría final optimizada'; }
+    } else if (/Optimization failed|Could not converge geometry optimization|OptimizationConvergenceError/i.test(t)) {
+      avisos.push('La optimización de ese .out no convergió: la geometría es la del último paso calculado.');
+    }
+    const g = bloqueGeometria(lineas, i, avisos);
+    // Método y base del cálculo (los últimos que aparecen)
+    let metodo = null;
+    const func = [...t.matchAll(/Composite Functional:\s*(\S+)/g)].pop();
+    if (func) {
+      const f = func[1].toLowerCase().replace(/^wb97x-?d$/, 'wb97x-d');
+      metodo = METODOS.includes(f) ? f : null;
+      if (!metodo) avisos.push(`El funcional ${func[1]} no está disponible aquí: se usa el del formulario.`);
+    } else if (/MP2 Total Energy|DF-MP2|Conventional MP2/i.test(t)) metodo = 'mp2';
+    else if (/SCF Total Energy|Total Energy =/i.test(t)) metodo = 'hf';
+    let base = null;
+    const b = [...t.matchAll(/^\s*Basis Set:\s*([^(\s][^\n]*?)\s*$/gm)].pop();
+    if (b) { try { base = normalizarBase(b[1]); } catch { avisos.push(`La base ${b[1]} no está disponible aquí: se usa la del formulario.`); } }
+    const solv = /Solvent name:\s*(.+)/.exec(t);
+    const tipo = /Solver Type:\s*(IEFPCM|CPCM)/i.exec(t);
+    const s = solv ? buscarSolvente(solv[1].trim()) : null;
+    const pcm = s ? { solvente: s.id, modelo: tipo ? tipo[1].toUpperCase() : 'IEFPCM' } : null;
+    return { ...g, metodo, base, pcm, origen, avisos };
+  }
+
+  const api = { leerEntradaPsi4, leerXYZ, leerSalidaPsi4, esSalidaPsi4, actualizarCuerpoMolecula, actualizarGeometriaCodigo, generarEntradaPsi4, SOLVENTES, MODELOS_PCM, buscarSolvente };
   Object.assign(global, api);
   if (typeof module !== 'undefined') module.exports = api;
 })(typeof window !== 'undefined' ? window : globalThis);

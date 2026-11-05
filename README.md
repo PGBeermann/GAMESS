@@ -27,6 +27,16 @@ el potencial electrostático y las vibraciones.
    **Abrir un .in** pone el dibujo 2D (JSME), la molécula 3D, el código y el formulario según el
    archivo. Si `molecule { … }` no tiene nombre, el título es el nombre del archivo; si no hay
    ninguno, la página avisa que no se ha asignado un nombre y no ejecuta hasta que se escriba.
+   **Abrir un .out de Psi4** (botón o arrastrándolo; hasta 80 MB): se toma la geometría
+   calculada (la final optimizada si la hay; si no, la última que escribió Psi4), la carga, la
+   multiplicidad, el método, la base y el solvente PCM, y se arma `nombre_SP.in`, una entrada
+   básica de **energía en un punto** (memoria, molécula, `set` y `energy(…)`). Lo que no se
+   detecta se toma del formulario, con un aviso.
+   **Matriz Z**: si la geometría viene en matriz Z (un .in o un .out), el código la conserva en
+   ese formato, con sus variables. Al pasar la geometría al paso siguiente o al regenerar desde el
+   formulario se recalculan las distancias, ángulos y diedros (o el valor de cada variable) con
+   las mismas referencias; nunca se pasa a cartesianas. Los átomos ficticios (X) se admiten si
+   tienen sus tres referencias.
    **Proyecto nuevo** (tarjeta 1) borra el dibujo, la molécula 3D, el código, las medidas y los
    resultados en pantalla, y deja la ventana de código en blanco («Mis cálculos» no se toca).
    **Corridas secuenciales** (optimización → TS → IRC): al terminar cada paso, su geometría final

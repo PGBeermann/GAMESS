@@ -49,8 +49,8 @@
         <button class="btn sec" id="leerSmiles" type="button">Leer SMILES</button>
       </div>
       <div class="fila-archivo">
-        <input type="file" id="archivoEntrada" accept=".in,.inp,.dat,.psi4,.txt,.xyz" hidden>
-        <button class="btn sec" id="abrirArchivo" type="button">Abrir archivo de entrada (.in / .xyz)</button>
+        <input type="file" id="archivoEntrada" accept=".in,.inp,.dat,.psi4,.txt,.xyz,.out,.log" hidden>
+        <button class="btn sec" id="abrirArchivo" type="button" title="Un .in o .xyz se abre tal cual; de un .out de Psi4 se toma la geometría calculada y se arma un .in de energía en un punto">Abrir archivo (.in / .xyz / .out)</button>
         <span class="info">o arrástrelo sobre esta tarjeta</span>
       </div>
       <div class="avisos" id="avisosArchivo" hidden></div>
