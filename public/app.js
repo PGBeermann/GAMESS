@@ -1353,9 +1353,11 @@ async function lanzarCalculo(datos, titulo) {
 
 function pildora(t) {
   const p = $('#pildoraEstado');
-  const txt = { en_cola: t.posicion_cola ? `En cola (#${t.posicion_cola})` : 'En cola', ejecutando: 'Calculando', terminado: 'Terminado', error: 'Error' }[t.estado];
+  const incompleto = t.estado === 'terminado' && t.parcial;
+  const txt = { en_cola: t.posicion_cola ? `En cola (#${t.posicion_cola})` : 'En cola', ejecutando: 'Calculando', terminado: incompleto ? 'Incompleto' : 'Terminado', error: 'Error' }[t.estado];
   p.textContent = txt;
-  p.className = `pildora ${t.estado === 'error' ? 'error' : t.estado === 'en_cola' ? 'cola' : ''}`;
+  p.title = incompleto ? `Se detuvo: ${t.parcial}. Se guardaron los puntos calculados correctamente.` : '';
+  p.className = `pildora ${t.estado === 'error' ? 'error' : t.estado === 'en_cola' || incompleto ? 'cola' : ''}`;
 }
 
 function cronometro() {
@@ -1717,7 +1719,13 @@ function panelResumen(t, r) {
   const o = r.orbitales || {};
   const f = r.frecuencias;
   const th = f?.termoquimica_hartree;
-  let html = `<div class="grupo-btn barra-guardar">
+  // Scan o IRC que se detuvo por un error o por el tiempo máximo: sólo los puntos buenos
+  const pc = r.parcial;
+  const nPuntos = (r.scan?.puntos || r.irc?.puntos || []).length;
+  let html = pc ? `<div class="aviso-parcial" role="status"><strong>${r.tarea === 'irc' ? 'IRC' : 'Scan'} incompleto.</strong> Se detuvo en el ${esc(pc.texto)}.
+    Se muestran los ${nPuntos}${r.scan?.puntos_pedidos ? ` de ${r.scan.puntos_pedidos}` : ''} puntos calculados correctamente; la salida (.out) termina con su tabla
+    ${r.iboview?.puntos_molden?.length ? `y hay ${r.iboview.puntos_molden.length} .molden, uno por punto` : 'pero no hubo tiempo para los .molden por punto'}.</div>` : '';
+  html += `<div class="grupo-btn barra-guardar">
     <button class="btn sec chico" type="button" data-guardar="out">Guardar salida (.out)</button>
     <button class="btn sec chico" type="button" data-guardar="in">Guardar entrada (.in)</button>
     ${r.iboview?.orbitales ? '<button class="btn sec chico" type="button" data-guardar="molden" title="Función de onda en formato Molden (IboView, Avogadro, Jmol…)">Descargar .molden</button>' : ''}
@@ -2646,7 +2654,7 @@ function guardarEnHistorial(t) {
 function actualizarHistorial(t) {
   const h = historial();
   const x = h.find((y) => y.id === t.id);
-  if (x && x.estado !== t.estado) { x.estado = t.estado; escribirLS(LS_HIST, h); pintarHistorial(); }
+  if (x && (x.estado !== t.estado || !!x.parcial !== !!t.parcial)) { x.estado = t.estado; x.parcial = t.parcial || null; escribirLS(LS_HIST, h); pintarHistorial(); }
 }
 function quitarDelHistorial(id) { escribirLS(LS_HIST, historial().filter((x) => x.id !== id)); pintarHistorial(); }
 function pintarHistorial() {
@@ -2657,7 +2665,7 @@ function pintarHistorial() {
   ul.innerHTML = h.map((x) => `<li data-id="${esc(x.id)}" tabindex="0">
       <span class="h-titulo">${esc(x.titulo)}</span>
       <span class="h-detalle">${esc(x.formula || '')} · ${esc(nombreDe('metodos', x.metodo))}/${esc(nombreDe('bases', x.base))} · ${esc(nombreDe('tareas', x.tarea))}${x.solvente ? ` · en ${esc(x.solvente)}` : ''} · ${new Date(x.creado).toLocaleString()}</span>
-      <span class="pildora ${x.estado === 'error' ? 'error' : x.estado === 'en_cola' ? 'cola' : ''}">${txt[x.estado] || esc(x.estado)}</span></li>`).join('');
+      <span class="pildora ${x.estado === 'error' ? 'error' : x.estado === 'en_cola' || x.parcial ? 'cola' : ''}">${x.parcial && x.estado === 'terminado' ? 'incompleto' : txt[x.estado] || esc(x.estado)}</span></li>`).join('');
 }
 
 // ---------- Eventos ----------

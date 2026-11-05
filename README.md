@@ -127,6 +127,16 @@ el potencial electrostático y las vibraciones.
      abren todos a la vez como cuadros de una trayectoria para seguir el flujo de electrones. Los
      coeficientes cumplen CᵀSC = I con la convención estándar de Molden (comprobado en bases
      cartesianas y esféricas).
+   - **Scan o IRC incompletos (error o tiempo máximo)**: si un punto falla o se acerca el tiempo
+     máximo (`TIEMPO_MAXIMO_MIN`), el cálculo no se pierde. Psi4 conoce el límite y deja de
+     calcular puntos antes, con una reserva (20 % del tiempo, entre 1.5 y 10 min) para guardar lo
+     hecho. Quedan sólo los puntos calculados correctamente: la tabla del .out («SCAN RELAJADO …
+     — INCOMPLETO» o «CAMINO DE REACCIÓN IRC — INCOMPLETO», con el motivo), la curva, la
+     animación y un `.molden` por punto (y su .zip para IboView). En el IRC, los puntos son los que
+     optking ya dio por convergidos; si falla una dirección, la otra se calcula igual (salvo que
+     se haya acabado el tiempo). Con el tiempo justo se omiten las superficies (orbitales y MEP)
+     para priorizar los .molden. El cálculo queda «Incompleto» (no «Error») y la página lo avisa
+     en el resumen.
    - **El servidor no ejecuta el código Python de un .in** (seguridad): interpreta la molécula,
      el nivel de teoría y el tipo de cálculo, y avisa si el archivo trae código que no se ejecuta.
 4. **Resultados**:

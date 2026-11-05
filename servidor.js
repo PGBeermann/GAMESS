@@ -270,6 +270,8 @@ function ejecutar(t) {
     if (res && res.ok) {
       t.estado = 'terminado';
       t.energia = res.energia && res.energia.hartree;
+      // Scan o IRC que se detuvo (error o tiempo): terminado con los puntos calculados correctamente
+      if (res.parcial) t.parcial = String(res.parcial.texto || 'incompleto').slice(0, 500);
     } else {
       t.estado = 'error';
       t.error = t.cancelado ? 'Cancelado por el usuario.' : t.excedido
@@ -336,7 +338,7 @@ function resumen(t) {
     id: t.id, estado: t.estado, etapa: t.etapa || null, posicion_cola: posicion,
     titulo: t.titulo, formula: t.formula, metodo: t.metodo, base: t.base, tarea: t.tarea,
     carga: t.carga, multiplicidad: t.multiplicidad, solvente: t.solvente || null,
-    creado: t.creado, inicio: t.inicio || null, fin: t.fin || null, error: t.error || null,
+    creado: t.creado, inicio: t.inicio || null, fin: t.fin || null, error: t.error || null, parcial: t.parcial || null,
   };
 }
 
@@ -475,6 +477,7 @@ app.post('/api/calculos', async (req, res) => {
     await fsp.writeFile(path.join(carpetaDe(id), 'entrada.json'), JSON.stringify({
       xyz: g.xyz, carga, multiplicidad: mult, metodo: metodo.id, base: base.id, tarea: tarea.id,
       mep: b.mep !== false, molden: true, hilos: CONFIG.hilos, memoria: CONFIG.memoria, titulo, irc, scan, pcm,
+      tiempo_max_s: CONFIG.minutosMax * 60, // el scan y el IRC se detienen antes para guardar lo calculado
     }));
     // Entrada .in: el código del editor tal cual o, si no hubo código, la equivalente generada
     // (para descargarla y ejecutarla con Psi4 fuera del servidor)

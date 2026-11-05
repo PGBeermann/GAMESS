@@ -74,6 +74,66 @@ def etapa(texto):
     print(f"@@ETAPA {texto}", flush=True)
 
 
+# ---------- Tiempo máximo y resultados parciales (scan e IRC) ----------
+# El servidor mata el proceso al llegar al tiempo máximo. Para no perder lo calculado, el scan y
+# el IRC se detienen antes («corte»), dejando una reserva para escribir la tabla en el .out, la
+# función de onda y los .molden de los puntos que sí se calcularon.
+class TiempoAgotado(Exception):
+    """Se llegó al corte: no hay tiempo para seguir calculando puntos."""
+
+
+RELOJ = {"fin": None, "corte": None}
+
+
+def configurar_tiempo(t0, segundos):
+    if not segundos:
+        return
+    RELOJ["fin"] = t0 + float(segundos) - 20  # margen para la carga de Psi4 y el cierre
+    RELOJ["corte"] = RELOJ["fin"] - min(600.0, max(90.0, 0.2 * float(segundos)))
+
+
+def queda_tiempo():
+    """¿Se puede empezar otro punto del scan o del IRC?"""
+    return RELOJ["corte"] is None or time.time() < RELOJ["corte"]
+
+
+def antes_del_limite(margen=15):
+    """¿Queda tiempo antes de que el servidor detenga el proceso?"""
+    return RELOJ["fin"] is None or time.time() < RELOJ["fin"] - margen
+
+
+# optking guarda los puntos del IRC en su propio objeto, que Psi4 no devuelve si la optimización
+# se interrumpe: se guarda una referencia al crearlo para leer los puntos ya convergidos.
+AYUDANTE_OPTKING = [None]
+
+
+def _capturar_ayudante_optking():
+    try:
+        import optking.opt_helper as oh
+        original = oh.CustomHelper.__init__
+
+        def iniciar(self, *args, **kwargs):
+            original(self, *args, **kwargs)
+            AYUDANTE_OPTKING[0] = self
+
+        oh.CustomHelper.__init__ = iniciar
+    except Exception:  # noqa: BLE001  (sin esto, el IRC interrumpido usa los pasos registrados)
+        pass
+
+
+_capturar_ayudante_optking()
+
+
+def puntos_irc_optking():
+    """Puntos del IRC que optking ya dio por convergidos (aunque la optimización se haya cortado)."""
+    try:
+        pts = AYUDANTE_OPTKING[0].opt_manager.opt_method.irc_history.irc_points
+    except Exception:  # noqa: BLE001
+        return None
+    return [{"x": p.x, "energy": p.energy, "arc_dist": p.arc_dist, "step_dist": p.step_dist}
+            for p in pts if getattr(p, "x", None) is not None and getattr(p, "energy", None) is not None]
+
+
 def a_numpy(valor):
     """Convierte Matrix/Vector de Psi4 (o listas) en un arreglo de NumPy."""
     return np.asarray(getattr(valor, "np", valor))
@@ -125,7 +185,7 @@ def emitir_paso(paso, mol, gradiente):
 
 
 @contextlib.contextmanager
-def en_vivo(mol, contador=None, registro=None):
+def en_vivo(mol, contador=None, registro=None, cortar=False):
     """Mientras dura el bloque, cada paso del optimizador se envía al visor 3D (@@GEOM).
 
     Se envuelve gradient(), que el ciclo de optimización de Psi4 llama una vez por paso. Se
@@ -134,7 +194,8 @@ def en_vivo(mol, contador=None, registro=None):
     psi4/__init__.py lo deja apuntando al módulo driver.py. Si la envoltura no es posible, el
     cálculo funciona igual, sin pasos intermedios.
     `contador` (lista de un entero) permite numerar seguido entre varias llamadas; `registro`
-    (lista) guarda la energía y la geometría de cada paso.
+    (lista) guarda la energía y la geometría de cada paso. Con `cortar`, al llegar al corte de
+    tiempo se lanza TiempoAgotado antes del paso siguiente (scan e IRC guardan lo calculado).
     """
     contador = contador if contador is not None else [0]
     espacio = getattr(psi4.optimize, "__globals__", None)
@@ -143,6 +204,8 @@ def en_vivo(mol, contador=None, registro=None):
     original = espacio.get("gradient") if isinstance(espacio, dict) else None
 
     def gradiente_con_aviso(name, **kwargs):
+        if cortar and kwargs.get("molecule") is mol and not queda_tiempo():
+            raise TiempoAgotado("se acabó el tiempo máximo del servidor")
         salida = original(name, **kwargs)
         # Sólo los pasos del ciclo de optimización (que usa nuestra molécula), no las
         # geometrías desplazadas de un hessiano por diferencias finitas
@@ -221,7 +284,11 @@ def irc(metodo, mol, direccion="ambas", puntos=20, paso=0.2):
     direcciones = ["backward", "forward"] if direccion == "ambas" else [direccion]
     nombres = {"backward": "hacia atrás (−)", "forward": "hacia adelante (+)"}
     contador, ramas, avisos = [0], {}, []
+    parcial = None  # {"tipo": "tiempo"|"error", "texto": …} si el IRC no terminó
     for d in direcciones:
+        if parcial and parcial["tipo"] == "tiempo":
+            avisos.append(f"El IRC {nombres[d]} no se calculó: se acabó el tiempo.")
+            continue
         mol.set_geometry(psi4.core.Matrix.from_array(geom_ts))
         mol.update_geometry()
         psi4.set_options({"opt_type": "irc", "irc_direction": d, "irc_points": int(puntos),
@@ -229,35 +296,49 @@ def irc(metodo, mol, direccion="ambas", puntos=20, paso=0.2):
                           "geom_maxiter": max(100, int(puntos) * 15)})
         etapa(f"IRC {nombres[d]}: hessiano en el TS y hasta {puntos} puntos")
         registro, error = [], None
-        with en_vivo(mol, contador, registro):
+        AYUDANTE_OPTKING[0] = None
+        with en_vivo(mol, contador, registro, cortar=True):
             try:
                 psi4.optimize(metodo, molecule=mol)
-            except Exception as e:  # noqa: BLE001
-                if type(e).__name__ != "OptimizationConvergenceError":
-                    raise
+            except Exception as e:  # noqa: BLE001  (se guarda el tramo bueno; la otra dirección sigue)
                 error = e
-        camino = None if error else leer_camino_irc(mol)
         signo = -1 if d == "backward" else 1
+        if error is None:
+            camino, aproximado = leer_camino_irc(mol), False
+        else:
+            leer_camino_irc(mol)  # borra un .opt.json que haya quedado
+            camino, aproximado = puntos_irc_optking(), False
+            if camino is None:  # sin acceso a optking: todos los pasos evaluados (aproximado)
+                camino, aproximado = None, True
         if camino:
             pts = []
             for i, p in enumerate(camino):
                 s = p.get("arc_dist") or p.get("step_dist") or i * paso
                 coords = a_numpy(p["x"]).reshape(-1, 3) * BOHR_ANG
                 pts.append({"s": signo * abs(float(s)), "energia": float(p["energy"]), "xyz": texto_xyz(simbolos, coords)})
-        else:
+        elif error is None or aproximado:
             # Sin el resumen de optking: se usan todos los pasos evaluados (camino aproximado)
             pts = [{"s": signo * i * paso, "energia": r["energia"], "xyz": r["xyz"]}
                    for i, r in enumerate(registro) if r.get("energia") is not None]
-            if error:
-                avisos.append(f"El IRC {nombres[d]} se detuvo antes de terminar "
-                              f"({mensaje_error(error, 'irc')}). Se muestra el tramo recorrido, aproximado.")
+        else:
+            pts = []
+        if error is not None:
+            tipo = "tiempo" if isinstance(error, TiempoAgotado) else "error"
+            texto = mensaje_error(error, "irc")
+            avisos.append(f"El IRC {nombres[d]} se detuvo antes de terminar ({texto}). "
+                          + ((f"Se usan los {len(pts)} puntos calculados correctamente hasta ahí." if len(pts) > 1
+                              else "Sólo quedó el punto de partida (el TS).")
+                             if pts and not aproximado else
+                             "Se muestra el tramo recorrido, aproximado." if pts else "No quedó ningún punto."))
+            parcial = parcial or {"tipo": tipo, "texto": f"IRC {nombres[d]}: {texto}"}
         ramas[d] = pts
     psi4.set_options({"opt_type": "min", "write_opt_history": False})
     atras, adelante = ramas.get("backward", []), ramas.get("forward", [])
     # Ambas ramas empiezan en el TS (s = 0): se une sin repetirlo
     union = list(reversed(atras)) + (adelante[1:] if atras and adelante else adelante)
     if not union:
-        raise RuntimeError("El IRC no produjo ningún punto.")
+        motivo = f" ({parcial['texto']})" if parcial else ""
+        raise RuntimeError(f"El IRC no produjo ningún punto{motivo}.")
     e_ts = next((p["energia"] for p in union if abs(p["s"]) < 1e-9), union[0]["energia"])
     for i, p in enumerate(union):
         p["indice"] = i
@@ -272,6 +353,19 @@ def irc(metodo, mol, direccion="ambas", puntos=20, paso=0.2):
         resumen["barrera_desde_adelante_kcal"] = (e_ts - adelante[-1]["energia"]) * HARTREE_KCAL
     if atras and adelante:
         resumen["energia_reaccion_kcal"] = (adelante[-1]["energia"] - atras[-1]["energia"]) * HARTREE_KCAL
+    if parcial:
+        resumen["parcial"] = parcial
+    # Tabla del camino en el .out (también cuando el IRC quedó incompleto)
+    psi4.core.print_out(f"\n\n===== CAMINO DE REACCIÓN IRC ({metodo.upper()}){' — INCOMPLETO' if parcial else ''} =====\n")
+    if parcial:
+        psi4.core.print_out(f"Se detuvo: {parcial['texto']}\nSólo se listan los puntos calculados correctamente.\n")
+    for a in avisos:
+        psi4.core.print_out(f"Nota: {a}\n")
+    psi4.core.print_out("\n   s (bohr·amu^½)        E (Eh)          ΔE vs TS (kcal/mol)\n")
+    for p in union:
+        psi4.core.print_out(f"   {p['s'] + 0.0:+10.4f}   {p['energia']:16.10f}   {p['de_kcal']:+12.3f}"
+                            f"{'   ← TS' if abs(p['s']) < 1e-9 else ''}\n")
+    psi4.core.print_out("=" * 60 + "\n")
     return resumen
 
 
@@ -421,68 +515,82 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
             mol.update_geometry()
     psi4.set_options({opcion: " ".join(str(a) for a in atomos[:natom]), **pasos_cortos})
     energias_pasos = []  # energía de cada paso (la registra en_vivo)
-    with en_vivo(mol, contador, energias_pasos):
+    parcial = None  # {"tipo": "tiempo"|"error", "texto": …} si el scan no terminó
+    with en_vivo(mol, contador, energias_pasos, cortar=True):
         for n, valor in enumerate(valores, 1):
+            if not queda_tiempo():
+                parcial = {"tipo": "tiempo", "texto": f"punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()}): {mensaje_error(TiempoAgotado())}"}
+                break
             etapa(f"{nombre}: punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()})")
             previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()  # última geometría buena (bohr)
-            partida = None  # geometría desde la que se repite el punto (si hace falta)
-            desviada = lambda c: (abs(medir_coordenada(c, tipo, idx) - valor) if tipo != "diedro"  # noqa: E731
-                                  else abs((medir_coordenada(c, tipo, idx) - valor + 180.0) % 360.0 - 180.0)) > tolerancia
-            for intento in (1, 2):
-                mol.set_geometry(psi4.core.Matrix.from_array(previa if partida is None else partida))
-                mol.update_geometry()
-                if partida is None:
-                    colocar_coordenada(mol, tipo, idx, valor)
-                convergio, nota = True, ""
-                inicio = len(energias_pasos)
-                try:
-                    energia = float(psi4.optimize(metodo, molecule=mol))
-                except Exception as e:  # noqa: BLE001
-                    if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
-                        raise
-                    convergio, nota = False, mensaje_error(e)
-                    energia = variable_global("CURRENT ENERGY")
-                    pasos = [r for r in energias_pasos[inicio:] if r.get("energia") is not None]
-                    # Con una coordenada congelada, optking a veces no logra bajar la fuerza residual
-                    # aunque la energía ya no cambia: si los últimos pasos son estables, el punto vale.
-                    ultimas = [r["energia"] for r in pasos[-4:]]
-                    if type(e).__name__ == "OptimizationConvergenceError" and len(ultimas) == 4 \
-                            and max(ultimas) - min(ultimas) < 2e-6:
-                        convergio, nota = True, "convergió en energía (quedó una fuerza residual por la restricción)"
-                    elif intento == 1 and pasos:
-                        # optking oscila (pasa por geometrías casi convergidas y se aleja): se repite desde
-                        # la mejor geometría que visitó, con la coordenada en su valor y pasos cortos
-                        buenas = [r for r in pasos if not desviada(np.array([[float(v) for v in l.split()[1:4]] for l in r["xyz"].splitlines()]))]
-                        if buenas:
-                            mejor = min(buenas, key=lambda r: r["energia"])
-                            partida = np.array([[float(v) for v in l.split()[1:4]] for l in mejor["xyz"].splitlines()]) / BOHR_ANG
-                            etapa(f"{nombre}: repitiendo el punto {n} desde la mejor geometría visitada")
-                            psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
-                            continue
-                sim, coords = geometria_actual(mol)
-                final = medir_coordenada(coords, tipo, idx)
-                if not desviada(coords):
-                    break
-                convergio = False
-                nota = f"la coordenada congelada se desvió a {fmt(final).strip()}"
-                if intento == 1:
-                    partida = None  # se repite desde la última geometría buena
-                    etapa(f"{nombre}: repitiendo el punto {n} con pasos más cortos")
-                    psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
-            psi4.set_options(pasos_cortos)
-            puntos.append({"valor": float(valor), "valor_final": final, "energia": energia,
-                           "convergio": convergio, "nota": nota, "xyz": texto_xyz(sim, coords)})
-            if not convergio:
-                # El punto siguiente parte de la última geometría buena, no de la deformada
+            try:
+                partida = None  # geometría desde la que se repite el punto (si hace falta)
+                desviada = lambda c: (abs(medir_coordenada(c, tipo, idx) - valor) if tipo != "diedro"  # noqa: E731
+                                      else abs((medir_coordenada(c, tipo, idx) - valor + 180.0) % 360.0 - 180.0)) > tolerancia
+                for intento in (1, 2):
+                    mol.set_geometry(psi4.core.Matrix.from_array(previa if partida is None else partida))
+                    mol.update_geometry()
+                    if partida is None:
+                        colocar_coordenada(mol, tipo, idx, valor)
+                    convergio, nota = True, ""
+                    inicio = len(energias_pasos)
+                    try:
+                        energia = float(psi4.optimize(metodo, molecule=mol))
+                    except Exception as e:  # noqa: BLE001
+                        if type(e).__name__ not in ("OptimizationConvergenceError", "SCFConvergenceError"):
+                            raise
+                        convergio, nota = False, mensaje_error(e)
+                        energia = variable_global("CURRENT ENERGY")
+                        pasos = [r for r in energias_pasos[inicio:] if r.get("energia") is not None]
+                        # Con una coordenada congelada, optking a veces no logra bajar la fuerza residual
+                        # aunque la energía ya no cambia: si los últimos pasos son estables, el punto vale.
+                        ultimas = [r["energia"] for r in pasos[-4:]]
+                        if type(e).__name__ == "OptimizationConvergenceError" and len(ultimas) == 4 \
+                                and max(ultimas) - min(ultimas) < 2e-6:
+                            convergio, nota = True, "convergió en energía (quedó una fuerza residual por la restricción)"
+                        elif intento == 1 and pasos:
+                            # optking oscila (pasa por geometrías casi convergidas y se aleja): se repite desde
+                            # la mejor geometría que visitó, con la coordenada en su valor y pasos cortos
+                            buenas = [r for r in pasos if not desviada(np.array([[float(v) for v in l.split()[1:4]] for l in r["xyz"].splitlines()]))]
+                            if buenas:
+                                mejor = min(buenas, key=lambda r: r["energia"])
+                                partida = np.array([[float(v) for v in l.split()[1:4]] for l in mejor["xyz"].splitlines()]) / BOHR_ANG
+                                etapa(f"{nombre}: repitiendo el punto {n} desde la mejor geometría visitada")
+                                psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
+                                continue
+                    sim, coords = geometria_actual(mol)
+                    final = medir_coordenada(coords, tipo, idx)
+                    if not desviada(coords):
+                        break
+                    convergio = False
+                    nota = f"la coordenada congelada se desvió a {fmt(final).strip()}"
+                    if intento == 1:
+                        partida = None  # se repite desde la última geometría buena
+                        etapa(f"{nombre}: repitiendo el punto {n} con pasos más cortos")
+                        psi4.set_options({"intrafrag_step_limit": 0.05, "intrafrag_step_limit_max": 0.1})
+                psi4.set_options(pasos_cortos)
+                puntos.append({"valor": float(valor), "valor_final": final, "energia": energia,
+                               "convergio": convergio, "nota": nota, "xyz": texto_xyz(sim, coords)})
+                if not convergio:
+                    # El punto siguiente parte de la última geometría buena, no de la deformada
+                    mol.set_geometry(psi4.core.Matrix.from_array(previa))
+                    mol.update_geometry()
+            except Exception as e:  # noqa: BLE001  (se conservan los puntos anteriores)
+                # El punto falló o se acabó el tiempo: se vuelve a la última geometría buena y se
+                # termina el scan con los puntos calculados correctamente hasta aquí
                 mol.set_geometry(psi4.core.Matrix.from_array(previa))
                 mol.update_geometry()
+                tipo_p = "tiempo" if isinstance(e, TiempoAgotado) else "error"
+                parcial = {"tipo": tipo_p, "texto": f"punto {n} de {len(valores)} ({simbolo} = {fmt(valor).strip()}): {mensaje_error(e)}"}
+                break
     psi4.set_options({opcion: "", "intrafrag_step_limit": 0.5, "intrafrag_step_limit_max": 1.0})
 
     # El mínimo y el máximo se buscan entre los puntos fiables (si los hay)
     validos = [p for p in puntos if p["energia"] is not None and p["convergio"]] or \
               [p for p in puntos if p["energia"] is not None]
     if not validos:
-        raise RuntimeError("Ningún punto del scan produjo una energía.")
+        motivo = f" (se detuvo en el {parcial['texto']})" if parcial else ""
+        raise RuntimeError(f"Ningún punto del scan produjo una energía{motivo}.")
     e_ref = next(p["energia"] for p in puntos if p["energia"] is not None)  # primer punto, como dice la tabla
     e_min = min(p["energia"] for p in validos)
     for p in puntos:
@@ -492,7 +600,10 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
     # Tabla en el .out (como haría un script de Psi4 con psi4.core.print_out)
     congelado = {"distancia": "la distancia queda congelada", "angulo": "el ángulo queda congelado",
                   "diedro": "el diedro queda congelado"}[tipo]
-    psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}) =====\n")
+    psi4.core.print_out(f"\n\n===== SCAN RELAJADO {simbolo}({etiqueta}) ({metodo.upper()}){' — INCOMPLETO' if parcial else ''} =====\n")
+    if parcial:
+        psi4.core.print_out(f"Se detuvo en el {parcial['texto']}\n"
+                            f"Se listan los {len(puntos)} de {len(valores)} puntos calculados correctamente.\n")
     psi4.core.print_out(f"ΔE respecto al primer punto; {congelado} ({opcion}) en cada optimización.\n\n")
     for p in puntos:
         if p["energia"] is None:
@@ -513,7 +624,8 @@ def scan_relajado(metodo, mol, atomos, valores, tipo="distancia"):
             "etiqueta": etiqueta, "puntos": puntos,
             "valor_minimo": minimo["valor"], "valor_maximo": maximo["valor"],
             "rango_kcal": (maximo["energia"] - minimo["energia"]) * HARTREE_KCAL,
-            "no_convergidos": sum(1 for p in puntos if not p["convergio"])}
+            "no_convergidos": sum(1 for p in puntos if not p["convergio"]),
+            "puntos_pedidos": len(valores), **({"parcial": parcial} if parcial else {})}
 
 
 MAX_RESTRICCIONES = 10
@@ -682,7 +794,7 @@ def archivos_iboview(metodo, mol, scf, carpeta, mult, datos_irc, datos_scan, tit
                 info["aviso_naturales"] = f"No se pudieron calcular los orbitales naturales MP2: {mensaje_error(e)}"
     if datos_irc and datos_irc.get("puntos"):
         info.update(iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base))
-    elif datos_scan and len(datos_scan.get("puntos") or []) > 1:
+    elif datos_scan and (len(datos_scan.get("puntos") or []) > 1 or datos_scan.get("parcial")):
         info.update(iboview_scan(metodo, mol, carpeta, datos_scan, titulo, base))
     return info
 
@@ -699,9 +811,11 @@ def molden_por_punto(metodo, mol, carpeta, prefijo, puntos, filas, cabecera, not
     geom_previa = a_numpy(mol.geometry()).reshape(-1, 3).copy()
     dir_m = carpeta / "molden"
     dir_m.mkdir(exist_ok=True)
-    nombres, marcos = [], []
+    nombres, marcos, filas_ok = [], [], []
     try:
         for k, (xyz, comentario) in enumerate(puntos, 1):
+            if not antes_del_limite(30):
+                break  # sin tiempo: se guardan los .molden ya escritos
             etapa(f"Archivos .molden: función de onda del punto {k} de {len(puntos)}")
             coords = np.array([[float(v) for v in l.split()[1:4]] for l in xyz.splitlines()])
             mol.set_geometry(psi4.core.Matrix.from_array(coords / BOHR_ANG))
@@ -711,11 +825,21 @@ def molden_por_punto(metodo, mol, carpeta, prefijo, puntos, filas, cabecera, not
             psi4.molden(funcion_scf(w), str(dir_m / nombre))
             psi4.core.clean()
             nombres.append(nombre)
+            filas_ok.append(filas[k - 1])
             lineas = xyz.strip().splitlines()
             marcos.append(f"{len(lineas)}\n{nombre} {comentario}\n" + "\n".join(lineas))
+    except Exception:  # noqa: BLE001
+        if not nombres:
+            raise
+        # Un punto falló: se guardan los .molden de los puntos anteriores
     finally:
         mol.set_geometry(psi4.core.Matrix.from_array(geom_previa))
         mol.update_geometry()
+    if not nombres:
+        return []
+    filas = filas_ok
+    if len(nombres) < len(puntos):
+        nota_orden += f"\nSólo {len(nombres)} de {len(puntos)} puntos tienen .molden (se acabó el tiempo o falló un punto)."
     nota_mp2 = ("\nLa función de onda de cada punto es la HF de referencia del MP2: los IBO se construyen\n"
                 "a partir de orbitales SCF.\n") if metodo == "mp2" else ""
     leame = f"""{cabecera}
@@ -754,8 +878,11 @@ def iboview_irc(metodo, mol, carpeta, datos_irc, titulo, base):
                      f"ΔE = {p['de_kcal']:+8.2f} kcal/mol{'   ← TS' if ts else ''}")
     nombres = molden_por_punto(
         metodo, mol, carpeta, "irc", puntos, filas,
-        f"Archivos para IboView — IRC de «{titulo}» ({metodo.upper()}/{base})",
+        f"Archivos para IboView — IRC de «{titulo}» ({metodo.upper()}/{base})"
+        + (" — IRC INCOMPLETO: sólo los puntos calculados correctamente" if datos_irc.get("parcial") else ""),
         "en orden: reactivo (s < 0) → estado de transición (s = 0) → producto (s > 0).")
+    if not nombres:
+        return {}
     return {"irc_zip": True, "irc_puntos": len(nombres), "puntos_tipo": "irc", "puntos_molden": nombres}
 
 
@@ -771,8 +898,11 @@ def iboview_scan(metodo, mol, carpeta, datos_scan, titulo, base):
         filas.append(f"{s}({etq}) = {p['valor']:.{dec}f} {u}   {e}{aviso}")
     nombres = molden_por_punto(
         metodo, mol, carpeta, "scan", puntos, filas,
-        f"Archivos para IboView — scan de {s}({etq}) de «{titulo}» ({metodo.upper()}/{base})",
+        f"Archivos para IboView — scan de {s}({etq}) de «{titulo}» ({metodo.upper()}/{base})"
+        + (" — SCAN INCOMPLETO: sólo los puntos calculados correctamente" if datos_scan.get("parcial") else ""),
         "en el orden del scan (ΔE respecto al primer punto).")
+    if not nombres:
+        return {}
     return {"scan_zip": True, "puntos_tipo": "scan", "puntos_molden": nombres}
 
 
@@ -924,6 +1054,8 @@ def frecuencias(wfn_freq, simbolos):
 
 def mensaje_error(e, tarea=None):
     tipo = type(e).__name__
+    if tipo == "TiempoAgotado":
+        return "se acabó el tiempo máximo del servidor"
     if tipo == "SCFConvergenceError":
         return "El SCF no convergió. Pruebe otra base, otro método o revise la carga/multiplicidad."
     if tipo == "OptimizationConvergenceError":
@@ -950,6 +1082,7 @@ def main():
         raise SystemExit("Parámetros no permitidos")
 
     t0 = time.time()
+    configurar_tiempo(t0, entrada.get("tiempo_max_s"))
     resultado = {"ok": False, "psi4_version": psi4.__version__, "metodo": metodo, "base": base,
                  "tarea": tarea, "carga": carga, "multiplicidad": mult}
     try:
@@ -996,6 +1129,7 @@ def main():
             puntos = min(60, max(3, int(op.get("puntos") or 20)))
             paso = min(0.5, max(0.05, float(op.get("paso") or 0.2)))
             resultado["irc"] = irc(metodo, mol, direccion, puntos, paso)
+            resultado["parcial"] = resultado["irc"].get("parcial")
             etapa("Calculando la función de onda en el estado de transición")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         elif tarea == "congelar":
@@ -1026,6 +1160,7 @@ def main():
             datos = scan_relajado(metodo, mol, atomos, valores, tipo)
             datos.pop("pasos", None)
             resultado["scan"] = datos
+            resultado["parcial"] = datos.get("parcial")
             etapa("Calculando la función de onda en el punto de menor energía del scan")
             energia, wfn = psi4.energy(metodo, return_wfn=True, molecule=mol)
         else:
@@ -1101,7 +1236,10 @@ def main():
             resultado["nota_propiedades"] = "Orbitales, dipolo y cargas calculados con la densidad SCF (HF) de referencia."
 
         orb = resultado.get("orbitales", {})
-        if orb.get("homo_indice"):
+        # Con el tiempo justo se priorizan los .molden de los puntos sobre las superficies
+        if (resultado.get("parcial") or {}).get("tipo") == "tiempo" or not antes_del_limite(300):
+            resultado["aviso_cubos"] = "No se calcularon las superficies (orbitales y MEP) para no superar el tiempo máximo."
+        elif orb.get("homo_indice"):
             etapa("Generando superficies (orbitales" + (" y potencial electrostático)" if entrada.get("mep") else ")"))
             try:
                 resultado["cubos"] = generar_cubos(scf, carpeta, orb["homo_indice"], orb.get("lumo_indice"),
@@ -1115,6 +1253,8 @@ def main():
                                                     resultado.get("scan"), entrada.get("titulo", "molecula"), base)
         except Exception as e:  # noqa: BLE001
             resultado["aviso_iboview"] = f"No se pudieron escribir los archivos .molden: {mensaje_error(e)}"
+        if not resultado.get("parcial"):
+            resultado.pop("parcial", None)
         resultado["ok"] = True
     except Exception as e:  # noqa: BLE001
         resultado["error"] = mensaje_error(e, tarea)
